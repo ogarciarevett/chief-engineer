@@ -1,0 +1,4 @@
+.claude-plugin/types/
+*.local.json
+.DS_Store
+node_modules/

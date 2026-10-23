@@ -1,0 +1,17 @@
+{
+  "name": "chief-engineer",
+  "version": "0.1.0",
+  "description": "A live pane for a chief coordinator: coordinators and their workers, environments, open PRs, provider usage, machine load, owner steps and the mailbox.",
+  "author": { "name": "ogarciarevett", "url": "https://github.com/ogarciarevett" },
+  "repository": "https://github.com/ogarciarevett/chief-engineer",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "configPath": {
+      "title": "Config file",
+      "description": "Path to the JSON config (see config.example.json). Keep it outside the repo.",
+      "type": "string",
+      "default": "~/.config/chief-engineer/config.json"
+    }
+  }
+}

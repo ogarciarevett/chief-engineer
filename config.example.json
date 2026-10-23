@@ -1,0 +1,23 @@
+{
+  "pollSeconds": 60,
+  "staleMinutes": 30,
+  "coordinators": [
+    { "name": "Alpha", "terminal": "term_00000000-0000-0000-0000-000000000001", "run": "run_000000000001", "model": "model-name effort" },
+    { "name": "Beta", "terminal": "term_00000000-0000-0000-0000-000000000002", "run": "run_000000000002", "model": "model-name effort" }
+  ],
+  "workersCommand": ["orca", "orchestration", "task-list", "--run", "{run}", "--json"],
+  "terminalsCommand": ["orca", "terminal", "list", "--json"],
+  "environments": [
+    { "name": "Dev", "url": "https://dev.example.com" },
+    { "name": "Staging", "url": "https://staging.example.com" },
+    { "name": "Prod", "url": "https://example.com" }
+  ],
+  "readyPath": "/ready",
+  "statusPath": "/v1/system/status",
+  "statusField": "state",
+  "repos": ["example-org/web", "example-org/api"],
+  "usageCommand": ["/path/to/usage-script"],
+  "usageProviders": ["claude", "codex", "cursor"],
+  "mailbox": "/path/to/mailbox/inbox.jsonl",
+  "ownerSteps": "/path/to/owner-steps.md"
+}
