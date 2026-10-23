@@ -4,6 +4,43 @@ A Claude Code mod for whoever runs several coordinators and their workers at onc
 It keeps one sidebar beside the chat with the seven things a chief checks all
 day, live, and a one-line band above the prompt while the pane is closed.
 
+![The panel with demo data](docs/screenshot.png)
+
+## Install
+
+From a shell:
+
+```
+claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer --scope user --config configPath=$HOME/.config/chief-engineer/config.json
+```
+
+Or at the prompt of a session: `/plugin install chief-engineer --marketplace ogarciarevett/chief-engineer`
+(answer `y` to add the marketplace, then pick a scope).
+
+Then write the config at that path and edit it (see the config reference below):
+
+```
+mkdir -p ~/.config/chief-engineer
+curl -fsSL https://raw.githubusercontent.com/ogarciarevett/chief-engineer/main/config.example.json -o ~/.config/chief-engineer/config.json
+```
+
+Keep it outside any repo. To change the path later,
+use `/config` (field `Config file` of `chief-engineer`) or `~/.claude/settings.json`:
+
+```json
+{ "pluginConfigs": { "chief-engineer": { "options": { "configPath": "/absolute/path/config.json" } } } }
+```
+
+Start a session. The panel opens inline above the prompt; `/chief` opens it at any
+time. For the sidebar on the right of the chat, start it fullscreen in a terminal
+at least 110 columns wide:
+
+```
+CLAUDE_CODE_NO_FLICKER=1 claude
+```
+
+To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`.
+
 ## What it shows
 
 1. **Coordinators**: one row per coordinator (name, terminal handle, model and
@@ -31,47 +68,14 @@ Every section header shows an icon, the age of its last good read, and toggles t
 section open or closed. A read that fails keeps the last value and adds a yellow
 `⚠ stale:` note; it never closes the pane. The top row sums up what needs you and
 has a refresh button (`r` while the pane has the keyboard). PR numbers and owner
-step URLs are links.
+step URLs are links. A cut-off row (an owner step, a worker, a repo) shows in full,
+wrapped, when you click it or select it and press Enter; press it again to cut it.
 
 The panel opens inline above the prompt by default. The right dock needs Claude
 Code's fullscreen layout: start the session with `CLAUDE_CODE_NO_FLICKER=1` in a
 terminal at least 110 columns wide. A dock on the left is not possible in Claude
 Code 2.1.309; a mod cannot move it. Under 44 columns of pane width the secondary
 columns (handles, models, times, meters) drop out.
-
-![The pane with placeholder data](docs/screenshot.png)
-
-## Install
-
-At the prompt of a terminal session:
-
-```
-/plugin install chief-engineer --marketplace ogarciarevett/chief-engineer
-```
-
-From a shell:
-
-```
-claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer
-```
-
-Answer `y` to add the marketplace, then pick a scope.
-
-To set the config path in the same step, add
-`--config configPath=/absolute/path/config.json` to the shell line.
-
-Otherwise point the mod at your config file. Copy `config.example.json` somewhere
-outside any repo, edit it, and set the path in `/config` (field `Config file` of
-`chief-engineer`) or in `~/.claude/settings.json`:
-
-```json
-{ "pluginConfigs": { "chief-engineer": { "options": { "configPath": "/absolute/path/config.json" } } } }
-```
-
-The pane opens on session start when the terminal is wide enough. `/chief` opens
-it at any time.
-
-To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`.
 
 ## Config reference
 
@@ -110,7 +114,8 @@ Implemented and covered by `claude plugin test` (21 tests):
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, terminal workers, worker merge, permission dialogs, environments, PRs,
   usage, machine, owner steps, mailbox).
-- Section headers collapse and reopen their section; PR numbers link to GitHub.
+- Section headers collapse and reopen their section; a cut-off row opens in full
+  and closes again; PR numbers link to GitHub.
 - The pane draws all seven sections from a config on the terminal and desktop
   surfaces; only the allowed read-only commands run.
 - An environment that does not answer shows as down instead of failing.
