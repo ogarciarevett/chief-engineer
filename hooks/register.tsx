@@ -2,9 +2,9 @@
 // things a chief coordinator checks all day. Reads only; a failed read keeps the
 // last value and shows its age.
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Config, Section, Snapshot } from '../types'
+import type { Config, Section, Snapshot, WorkerRow } from '../types'
 import {
   carryDone,
   expandHome,
@@ -18,6 +18,7 @@ import {
   parseMail,
   parsePrs,
   parseSteps,
+  parseTerminalWorkers,
   parseTerminals,
   parseUsage,
   parseWorkers,
@@ -28,6 +29,7 @@ const TITLE = 'Chief engineer'
 const LOCAL_MS = 10_000
 const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-1' })
 const isPaneOpen = atom({ plugin: 'chief-engineer', key: 'isPaneOpen' } as const, false)
+const collapsed = atom({ plugin: 'chief-engineer', key: 'collapsed' } as const, [] as string[])
 
 type $ = EngineInterface
 type Key = keyof Snapshot
@@ -62,15 +64,23 @@ async function readRemote($: $, c: Config) {
   const now = () => Date.now()
   await Promise.all([
     refresh($, 'coordinators', async () => {
-      const terminals = parseTerminals(await run($, c.terminalsCommand))
+      const terminalsOut = await run($, c.terminalsCommand)
+      const terminals = parseTerminals(terminalsOut)
       const prev = (await read($, snapshot)).coordinators?.value ?? []
-      return Promise.all(
-        c.coordinators.map(async co => {
-          const live = co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : []
-          const workers = carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now())
-          return coordinatorRow(co, workers, terminals, now())
-        }),
+      // One shared set, filled in config order, so each terminal is listed under one coordinator only.
+      const seen = new Set(c.coordinators.flatMap(x => (x.terminal ? [x.terminal] : [])))
+      const dispatched = await Promise.all(
+        c.coordinators.map(async co => (co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : [])),
       )
+      for (const w of dispatched.flat()) if (w.handle) seen.add(w.handle)
+      const order = { input: 0, stale: 1, running: 2, failed: 3, done: 4 }
+      return c.coordinators.map((co, i) => {
+        const mine = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes)
+        for (const w of mine) seen.add(w.handle!)
+        const live = [...dispatched[i]!, ...mine].sort((a, b) => order[a.state] - order[b.state])
+        const workers = carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now())
+        return coordinatorRow(co, workers, terminals, now())
+      })
     }),
     refresh($, 'environments', () =>
       Promise.all(
@@ -104,7 +114,6 @@ const ago = (ms: number) => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
   return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
 }
-const cut = (s: string, w: number) => (s.length > w ? s.slice(0, Math.max(1, w - 1)) + '…' : s)
 
 // Module state: a reload starts it over, which only costs one early read.
 let configPath = '~/.config/chief-engineer/config.json'
@@ -130,8 +139,8 @@ async function tick($: $) {
 }
 
 async function open($: $) {
-  // Inline, ask for room for all seven sections; a dock ignores it.
-  const r = await $.ui.open({ id: PANE, title: TITLE, rows: 48 })
+  // Inline, room for all seven sections; docked, a sidebar wide enough for one row.
+  const r = await $.ui.open({ id: PANE, title: TITLE, rows: 48, columns: 56 })
   await update($, isPaneOpen, () => r.isPlaced)
 }
 
@@ -158,59 +167,209 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
     const s = await read($, snapshot)
-    const w = Math.max(20, e.props.bodyColumns)
-    const head = (title: string, sec?: Section<unknown>) => (
-      <Text bold>
-        {title}{' '}
-        <Text dimColor>{!sec ? 'waiting' : sec.at ? ago(sec.at) : 'never read'}</Text>
-        {sec?.error ? <Text color="warning"> stale: {cut(sec.error, 40)}</Text> : ''}
-      </Text>
-    )
-    const line = (t: string, color?: string) => <Text color={color}>{cut(mask(t), w)}</Text>
+    const shut = await read($, collapsed)
+    const w = Math.max(24, e.props.bodyColumns)
+    // Under 44 cells the secondary columns (handles, models, times, meters) drop out.
+    const isWide = w >= 44
 
-    if (!s.config?.value) return <Box flexDirection="column">{line(s.config?.error ? `Config ${configPath}: ${s.config.error}` : `No config read yet from ${configPath}`, s.config?.error ? 'error' : 'warning')}</Box>
+    const row = (left: RenderChildren, right?: RenderChildren, indent = 0) => (
+      <Box flexDirection="row" justifyContent="space-between" columnGap="sm" paddingLeft={indent}>
+        <Box flexShrink={1}>{left}</Box>
+        {right ? <Box flexShrink={0}>{right}</Box> : ''}
+      </Box>
+    )
+    const meter = (frac: number, color: string, cells = 8) => {
+      const n = Math.round(Math.min(1, Math.max(0, frac)) * cells)
+      return (
+        <Text>
+          <Text color={color}>{'█'.repeat(n)}</Text>
+          <Text dimColor>{'░'.repeat(cells - n)}</Text>
+        </Text>
+      )
+    }
+    const section = (id: string, icon: string, title: string, sec: Section<unknown> | undefined, body: () => RenderChildren, extra?: RenderChildren) => {
+      const isOpen = !shut.includes(id)
+      return (
+        <Box flexDirection="column">
+          {row(
+            <Button key={`toggle-${id}`} plain onPress={() => update($, collapsed, list => (isOpen ? [...list, id] : list.filter(x => x !== id)))}>
+              <Text dimColor>{isOpen ? '▾' : '▸'} </Text>
+              <Text weight="bold" color="claude">{icon} </Text>
+              <Text weight="bold">{title}</Text>
+              {extra ?? ''}
+            </Button>,
+            <Text dimColor tabular>{!sec ? 'waiting' : sec.at ? ago(sec.at) : 'never read'}</Text>,
+          )}
+          {sec?.error ? row(<Text color="warning" wrap="truncate-end">⚠ stale: {mask(sec.error)}</Text>, undefined, 2) : ''}
+          {isOpen ? body() : ''}
+        </Box>
+      )
+    }
+
+    if (!s.config?.value)
+      return (
+        <Text color={s.config?.error ? 'error' : 'warning'} wrap="wrap">
+          {s.config?.error ? `✗ Config ${configPath}: ${s.config.error}` : `◌ No config read yet from ${configPath}`}
+        </Text>
+      )
 
     const cfg = s.config.value
+    const coords = s.coordinators?.value ?? []
+    const workers = coords.flatMap(c => c.workers)
+    const needYou = workers.filter(x => x.state === 'input').length
+    const stale = workers.filter(x => x.state === 'stale').length
+    const envs = s.environments?.value ?? []
+    const down = envs.filter(x => x.ready !== '200').length
     const m = s.machine?.value
+
+    const worker = (wk: WorkerRow) => {
+      const [icon, color, label] =
+        wk.state === 'input' ? ['◐', 'error', 'needs you']
+        : wk.state === 'stale' ? ['◌', 'warning', `stale ${wk.quietMinutes ?? '?'}m`]
+        : wk.state === 'done' ? ['✓', 'subtle', 'done']
+        : wk.state === 'failed' ? ['✗', 'error', 'failed']
+        : ['●', 'success', 'running']
+      return row(
+        <Text wrap="truncate-end" dimColor={wk.state === 'done'}>
+          <Text color={color}>{icon} </Text>
+          {mask(wk.name)}
+        </Text>,
+        <Text>
+          <Text color={color} weight={wk.state === 'input' ? 'bold' : undefined} dimColor={wk.state === 'running'}>{label}</Text>
+          {wk.pr ? <Text tabular> #{wk.pr}</Text> : ''}
+        </Text>,
+        2,
+      )
+    }
+
     return (
-      <Box flexDirection="column">
-        {head('Coordinators', s.coordinators)}
-        {(s.coordinators?.value ?? []).flatMap(c => [
-          line(`${c.name}  ${c.terminal}  ${c.model}${c.quietMinutes !== undefined ? `  quiet ${c.quietMinutes}m` : ''}`, undefined),
-          ...(c.workers.length ? c.workers : []).map(wk =>
-            line(
-              `  ${wk.name}  ${wk.state === 'stale' ? `stale ${wk.quietMinutes ?? '?'}m` : wk.state === 'input' ? 'waiting for input' : wk.state}${wk.pr ? `  #${wk.pr}` : ''}`,
-              wk.state === 'input' ? 'error' : wk.state === 'stale' ? 'warning' : wk.state === 'running' ? undefined : 'subtle',
-            ),
-          ),
-          ...(c.workers.length ? [] : [line('  no active workers', 'subtle')]),
-        ])}
-        {head('Environments', s.environments)}
-        {(s.environments?.value ?? []).map(env => line(`${env.name}  ready ${env.ready}  ${env.state}  at ${new Date(env.checkedAt).toISOString().slice(11, 16)}Z`, env.ready === '200' ? (env.state === 'normal' ? 'success' : 'warning') : 'error'))}
-        {head('Open PRs', s.prs)}
-        {(s.prs?.value ?? []).map(r => {
-          const name = `${cut(r.repo.split('/').pop() ?? r.repo, 24)} ${r.prs.length} `
-          // As many numbers as fit the width, then a count of the rest.
-          let room = w - name.length - 6
-          const shown = r.prs.filter(p => (room -= `#${p.number} `.length) >= 0)
-          return (
-            <Text>
-              {name}
-              {shown.map(p => <Text color={p.isOld ? 'warning' : undefined}>#{p.number} </Text>)}
-              {shown.length < r.prs.length ? `+${r.prs.length - shown.length}` : ''}
-            </Text>
-          )
+      <Box flexDirection="column" rowGap="md">
+        {row(
+          <Text wrap="truncate-end">
+            {needYou ? <Text color="error" weight="bold">◐ {needYou} need you  </Text> : ''}
+            {needYou || stale || down ? '' : <Text color="success">● all clear</Text>}
+            {stale ? <Text color="warning">◌ {stale} stale  </Text> : ''}
+            {down ? <Text color="error">▼ {down} env down</Text> : ''}
+          </Text>,
+          <Button key="refresh" plain hotkey="r" label="↻ refresh" onPress={() => { lastRemote = 0; void tick($).catch(() => {}) }} />,
+        )}
+        {section('coordinators', '◆', 'Coordinators', s.coordinators, () =>
+          coords.map(c => (
+            <Box flexDirection="column">
+              {row(
+                <Text weight="bold" wrap="truncate-end">{mask(c.name)}</Text>,
+                <Text dimColor tabular>
+                  {isWide ? `${c.terminal}  ${c.model}  ` : ''}
+                  {c.quietMinutes !== undefined ? `${c.quietMinutes}m` : ''}
+                </Text>,
+              )}
+              {c.workers.length ? c.workers.map(worker) : row(<Text dimColor>no active workers</Text>, undefined, 2)}
+            </Box>
+          )),
+          workers.length ? <Text dimColor tabular>  {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length}</Text> : undefined,
+        )}
+        {section('environments', '◎', 'Environments', s.environments, () =>
+          envs.map(env => {
+            const isUp = env.ready === '200'
+            const color = !isUp ? 'error' : env.state === 'normal' ? 'success' : 'warning'
+            return row(
+              <Text wrap="truncate-end">
+                <Text color={color}>{isUp ? '▲' : '▼'} </Text>
+                <Text weight="bold">{env.name}</Text>
+              </Text>,
+              <Text tabular>
+                <Text color={color}>{isUp ? env.state : `ready ${env.ready}`}</Text>
+                {isWide ? <Text dimColor>  {new Date(env.checkedAt).toISOString().slice(11, 16)}Z</Text> : ''}
+              </Text>,
+            )
+          }),
+        )}
+        {section('prs', '◇', 'Open PRs', s.prs, () =>
+          (s.prs?.value ?? []).map(r => {
+            const old = r.prs.filter(p => p.isOld).length
+            // Each number costs its digits and a gap; as many as fit, then a count of the rest.
+            let room = w - 6
+            const shown = r.prs.filter(p => (room -= String(p.number).length + 2) >= 0)
+            return (
+              <Box flexDirection="column">
+                {row(
+                  <Text wrap="truncate-end" dimColor={!r.prs.length}>{r.repo.split('/').pop() ?? r.repo}</Text>,
+                  <Text tabular>
+                    {old ? <Text color="warning">◷ {old} old  </Text> : ''}
+                    <Text weight="bold" dimColor={!r.prs.length}>{String(r.prs.length).padStart(2)}</Text>
+                  </Text>,
+                )}
+                {shown.length ? (
+                  <Box flexDirection="row" flexWrap="wrap" columnGap="sm" paddingLeft={2}>
+                    {shown.map(p => (
+                      <Link href={`https://github.com/${r.repo}/pull/${p.number}`}>
+                        <Text color={p.isOld ? 'warning' : 'suggestion'}>#{p.number}</Text>
+                      </Link>
+                    ))}
+                    {shown.length < r.prs.length ? <Text dimColor>+{r.prs.length - shown.length}</Text> : ''}
+                  </Box>
+                ) : ''}
+              </Box>
+            )
+          }),
+        )}
+        {cfg.usageCommand.length
+          ? section('usage', '◔', 'Usage', s.usage, () =>
+              (s.usage?.value ?? []).map(u => {
+                const [name = '', rest = ''] = mask(u).split(/:\s*(.*)/)
+                return row(
+                  <Text wrap="truncate-end">
+                    <Text weight="bold">{name.padEnd(8)} </Text>
+                    {rest.split(/(\d+%)/).map(part => {
+                      const pct = /^\d+%$/.test(part) ? parseInt(part, 10) : -1
+                      return pct < 0 ? <Text dimColor>{part}</Text> : <Text tabular color={pct >= 90 ? 'error' : pct >= 70 ? 'warning' : undefined}>{part}</Text>
+                    })}
+                  </Text>,
+                )
+              }),
+            )
+          : ''}
+        {section('machine', '▣', 'Machine', s.machine, () => {
+          if (!m) return <Text dimColor>no reading yet</Text>
+          const loadLevel = m.load > 30 ? 'error' : m.load < 20 ? 'success' : 'warning'
+          const freeLevel = m.freePercent < 25 ? 'error' : m.freePercent > 40 ? 'success' : 'warning'
+          return [
+            row(<Text>load</Text>, <Text tabular>{isWide ? meter(m.load / 30, loadLevel) : ''} <Text color={loadLevel}>{m.load.toFixed(1).padStart(5)}</Text></Text>),
+            row(<Text>free memory</Text>, <Text tabular>{isWide ? meter(m.freePercent / 100, freeLevel) : ''} <Text color={freeLevel}>{`${m.freePercent}%`.padStart(5)}</Text></Text>),
+          ]
         })}
-        {cfg.usageCommand.length ? head('Usage', s.usage) : ''}
-        {cfg.usageCommand.length ? (s.usage?.value ?? []).map(u => line(u, /error/.test(u) ? 'subtle' : undefined)) : ''}
-        {head('Machine', s.machine)}
-        {m ? line(`load ${m.load.toFixed(1)}  free ${m.freePercent}%`, machineLevel(m)) : line('no reading yet', 'subtle')}
-        {cfg.ownerSteps ? head('Owner steps', s.steps) : ''}
-        {cfg.ownerSteps ? (s.steps?.value?.length ? s.steps.value.map(t => line(`• ${t}`)) : line('none open', 'subtle')) : ''}
-        {cfg.mailbox ? head('Mailbox', s.mail) : ''}
-        {cfg.mailbox ? (s.mail?.value ?? []).map(r => line(`${r.at}  ${r.from}  ${r.subject}`)) : ''}
+        {cfg.ownerSteps
+          ? section('steps', '☐', 'Owner steps', s.steps, () =>
+              s.steps?.value?.length
+                ? s.steps.value.map(t => {
+                    const url = t.match(/https?:\/\/\S+/)?.[0]
+                    return row(
+                      <Text wrap="truncate-end">
+                        <Text color="warning">☐ </Text>
+                        {mask(url ? t.replace(url, '').trim() : t)}
+                      </Text>,
+                      url ? <Link href={url}><Text color="suggestion">open ↗</Text></Link> : undefined,
+                    )
+                  })
+                : <Text dimColor>✓ none open</Text>,
+              s.steps?.value?.length ? <Text color="warning" tabular>  {s.steps.value.length}</Text> : undefined,
+            )
+          : ''}
+        {cfg.mailbox
+          ? section('mail', '✉', 'Mailbox', s.mail, () =>
+              (s.mail?.value ?? []).map(r =>
+                row(
+                  <Text wrap="truncate-end">
+                    {isWide ? <Text dimColor tabular>{r.at}  </Text> : ''}
+                    <Text weight="bold">{r.from.padEnd(8)} </Text>
+                    {r.subject}
+                  </Text>,
+                ),
+              ),
+            )
+          : ''}
       </Box>
     )
   })
@@ -221,19 +380,25 @@ export const register: Register = (on, options) => {
     if (!s.config?.value) return next(e)
     const { Text } = $.ui.resolve(e)
     const workers = (s.coordinators?.value ?? []).flatMap(c => c.workers)
-    const attn = workers.filter(x => x.state === 'input' || x.state === 'stale').length
+    const input = workers.filter(x => x.state === 'input').length
+    const stale = workers.filter(x => x.state === 'stale').length
     const envs = s.environments?.value ?? []
+    const down = envs.filter(x => x.ready !== '200').length
     const prs = (s.prs?.value ?? []).reduce((n, r) => n + r.prs.length, 0)
     const m = s.machine?.value
-    const text = [
-      `chief: ${workers.filter(x => x.state !== 'done' && x.state !== 'failed').length} workers`,
-      `${attn} need you`,
-      `envs ${envs.filter(x => x.ready === '200').length}/${envs.length} ready`,
-      `${prs} PRs`,
-      m ? `load ${m.load.toFixed(0)} free ${m.freePercent}%` : '',
-      `${s.steps?.value?.length ?? 0} owner steps`,
-      '/chief',
-    ].filter(Boolean).join(' · ')
-    return <Text color={attn ? 'warning' : 'subtle'}>{cut(text, Math.max(20, e.props.bodyColumns))}</Text>
+    const steps = s.steps?.value?.length ?? 0
+    return (
+      <Text wrap="truncate-end">
+        <Text color="claude" weight="bold">◆ chief  </Text>
+        <Text>● {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length} workers  </Text>
+        {input ? <Text color="error" weight="bold">◐ {input} need you  </Text> : ''}
+        {stale ? <Text color="warning">◌ {stale} stale  </Text> : ''}
+        <Text color={down ? 'error' : 'success'}>{down ? '▼' : '▲'} envs {envs.length - down}/{envs.length}  </Text>
+        <Text>◇ {prs} PRs  </Text>
+        {m ? <Text color={machineLevel(m)}>▣ load {m.load.toFixed(0)} free {m.freePercent}%  </Text> : ''}
+        {steps ? <Text color="warning">☐ {steps} steps  </Text> : ''}
+        <Text dimColor>/chief</Text>
+      </Text>
+    )
   })
 }

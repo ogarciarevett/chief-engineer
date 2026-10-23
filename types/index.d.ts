@@ -3,6 +3,8 @@ export type Coordinator = {
   terminal?: string
   run?: string
   model?: string
+  // Path prefixes: agent terminals under them show as this coordinator's workers.
+  worktrees?: string[]
 }
 
 export type Config = {
@@ -29,6 +31,8 @@ export type WorkerRow = {
   state: WorkerState
   quietMinutes?: number
   pr?: string
+  // The terminal it runs in, so one worker is never listed twice; not drawn.
+  handle?: string
   // When a dispatched worker left the list; it shows as done for an hour.
   doneAt?: number
 }
@@ -63,6 +67,6 @@ export type Snapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean }
+    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[] }
   }
 }

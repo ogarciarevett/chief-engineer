@@ -2,7 +2,7 @@
   "pollSeconds": 60,
   "staleMinutes": 30,
   "coordinators": [
-    { "name": "Alpha", "terminal": "term_00000000-0000-0000-0000-000000000001", "run": "run_000000000001", "model": "model-name effort" },
+    { "name": "Alpha", "terminal": "term_00000000-0000-0000-0000-000000000001", "run": "run_000000000001", "model": "model-name effort", "worktrees": ["/path/to/alpha-worktrees/"] },
     { "name": "Beta", "terminal": "term_00000000-0000-0000-0000-000000000002", "run": "run_000000000002", "model": "model-name effort" }
   ],
   "workersCommand": ["orca", "orchestration", "task-list", "--run", "{run}", "--json"],

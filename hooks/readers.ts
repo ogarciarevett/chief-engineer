@@ -33,8 +33,8 @@ export function parseConfig(text: string): Config {
   for (const k of ['workersCommand', 'terminalsCommand', 'repos', 'usageCommand', 'usageProviders'] as const) {
     if (!isStrings(c[k])) throw new Error(`${k} must be a list of strings`)
   }
-  if (!Array.isArray(c.coordinators) || !c.coordinators.every(x => typeof x?.name === 'string')) {
-    throw new Error('coordinators must be a list of { name }')
+  if (!Array.isArray(c.coordinators) || !c.coordinators.every(x => typeof x?.name === 'string' && (x.worktrees === undefined || isStrings(x.worktrees)))) {
+    throw new Error('coordinators must be a list of { name, worktrees? }')
   }
   if (!Array.isArray(c.environments) || !c.environments.every(x => typeof x?.name === 'string' && /^https?:\/\//.test(x?.url))) {
     throw new Error('environments must be a list of { name, url } with an http(s) url')
@@ -49,7 +49,7 @@ const minutesSince = (ms: number | undefined, now: number) => (ms ? Math.max(0, 
 const INPUT = ['do you want to', '(y/n)', 'press enter', 'allow this', 'approve?']
 const PR = /(?:\bPR\s*#?|#)(\d{2,6})\b/i
 
-type Terminal = { handle: string; lastOutputAt?: number; preview?: string }
+type Terminal = { handle: string; lastOutputAt?: number; preview?: string; title?: string; worktreePath?: string; agentIdentity?: string }
 
 // Terminal output is used only to flag a waiting prompt; it is never returned.
 export function parseTerminals(stdout: string): Map<string, { quietMinutes?: number; isWaiting: boolean; lastOutputAt?: number }> {
@@ -78,7 +78,7 @@ export function parseWorkers(stdout: string, terminals: ReturnType<typeof parseT
       const term = t.assignee_handle ? terminals.get(t.assignee_handle) : undefined
       const quiet = minutesSince(term?.lastOutputAt, now)
       const state = term?.isWaiting ? 'input' : quiet === undefined || quiet > staleMinutes ? 'stale' : 'running'
-      rows.push({ name, state, quietMinutes: quiet, pr })
+      rows.push({ name, state, quietMinutes: quiet, pr, handle: t.assignee_handle })
     } else if ((t.status === 'completed' || t.status === 'failed') && t.completed_at) {
       // Settled work stays visible for an hour, then drops off the board.
       const ended = Date.parse(t.completed_at.includes('T') ? t.completed_at : t.completed_at.replace(' ', 'T') + 'Z')
@@ -89,12 +89,30 @@ export function parseWorkers(stdout: string, terminals: ReturnType<typeof parseT
   return rows.sort((a, b) => order[a.state] - order[b.state])
 }
 
+// Agent terminals under a coordinator's worktrees count as its workers too: the title
+// and a state, never the preview or the command line. `skip` holds handles shown already.
+export function parseTerminalWorkers(stdout: string, worktrees: string[], skip: Set<string>, now: number, staleMinutes: number): WorkerRow[] {
+  if (!worktrees.length) return []
+  const list = (JSON.parse(stdout)?.result?.terminals ?? []) as Terminal[]
+  const waiting = parseTerminals(stdout)
+  return list
+    .filter(t => t.agentIdentity && !skip.has(t.handle) && worktrees.some(w => (t.worktreePath ?? '').startsWith(w)))
+    .map(t => {
+      const name = mask((t.title || t.handle.slice(0, 13)).replace(/\s+/g, ' '))
+      const quiet = minutesSince(t.lastOutputAt, now)
+      const state = waiting.get(t.handle)?.isWaiting ? 'input' : quiet === undefined || quiet > staleMinutes ? 'stale' : 'running'
+      return { name, state, quietMinutes: quiet, pr: name.match(PR)?.[1], handle: t.handle } as WorkerRow
+    })
+}
+
 // A worker that was live last read and is gone now has settled: keep it as done for an hour.
+// Matched by terminal when known: agents retitle their terminals as work moves on.
 export function carryDone(prev: WorkerRow[], next: WorkerRow[], now: number): WorkerRow[] {
-  const names = new Set(next.map(w => w.name))
+  const key = (w: WorkerRow) => w.handle ?? w.name
+  const live = new Set(next.map(key))
   const settled = prev
-    .filter(w => !names.has(w.name) && (w.doneAt === undefined ? w.state !== 'done' && w.state !== 'failed' : now - w.doneAt < 3600_000))
-    .map(w => ({ name: w.name, state: 'done' as const, pr: w.pr, doneAt: w.doneAt ?? now }))
+    .filter(w => !live.has(key(w)) && (w.doneAt === undefined ? w.state !== 'done' && w.state !== 'failed' : now - w.doneAt < 3600_000))
+    .map(w => ({ name: w.name, state: 'done' as const, pr: w.pr, doneAt: w.doneAt ?? now, ...(w.handle ? { handle: w.handle } : {}) }))
   return [...next, ...settled]
 }
 

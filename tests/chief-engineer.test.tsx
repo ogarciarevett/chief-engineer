@@ -10,6 +10,7 @@ import {
   parseMail,
   parsePrs,
   parseSteps,
+  parseTerminalWorkers,
   parseTerminals,
   parseUsage,
   parseWorkers,
@@ -17,7 +18,7 @@ import {
 
 const NOW = Date.parse('2026-10-23T16:00:00Z')
 const CONFIG = {
-  coordinators: [{ name: 'Alpha', terminal: 'term_alpha', run: 'run_a', model: 'model-x medium' }],
+  coordinators: [{ name: 'Alpha', terminal: 'term_alpha', run: 'run_a', model: 'model-x medium', worktrees: ['/w/alpha'] }],
   environments: [{ name: 'Dev', url: 'https://dev.example.test' }],
   repos: ['example-org/web'],
   usageCommand: ['/bin/usage'],
@@ -32,6 +33,7 @@ const terminalsAt = (now: number) => JSON.stringify({
       { handle: 'term_w1', lastOutputAt: now - 2 * 60_000, preview: 'Do you want to proceed? (y/n)' },
       { handle: 'term_w2', lastOutputAt: now - 45 * 60_000, preview: 'SECRET=hunter2' },
       { handle: 'term_w3', lastOutputAt: now - 60_000, preview: '' },
+      { handle: 'term_t1', title: 'Side task in a worktree', worktreePath: '/w/alpha-x', agentIdentity: 'claude', lastOutputAt: now - 60_000, preview: '' },
     ],
   },
 })
@@ -71,12 +73,43 @@ test('workers: input, stale, running, recent done; old and queued drop off; PR n
   expect(JSON.stringify(rows).includes('hunter2')).toBe(false)
 })
 
+test('workers: agent terminals under a worktree count, with title and state; shells, coordinators and dispatched ones do not', () => {
+  const out = JSON.stringify({
+    result: {
+      terminals: [
+        { handle: 'term_c', title: 'Coordinator', worktreePath: '/w/app', agentIdentity: 'claude', lastOutputAt: NOW },
+        { handle: 'term_d', title: 'Dispatched one', worktreePath: '/w/app', agentIdentity: 'claude', lastOutputAt: NOW },
+        { handle: 'term_a', title: 'Fix login PR #88', worktreePath: '/w/app-feature', agentIdentity: 'codex', lastOutputAt: NOW - 60_000, preview: 'rm -rf token=abc' },
+        { handle: 'term_b', title: 'Review', worktreePath: '/w/app', agentIdentity: 'claude', lastOutputAt: NOW, preview: 'Do you want to proceed?' },
+        { handle: 'term_s', title: 'zsh', worktreePath: '/w/app', lastOutputAt: NOW },
+        { handle: 'term_o', title: 'Elsewhere', worktreePath: '/other', agentIdentity: 'claude', lastOutputAt: NOW },
+      ],
+    },
+  })
+  const rows = parseTerminalWorkers(out, ['/w/app'], new Set(['term_c', 'term_d']), NOW, 30)
+  expect(rows.map(r => `${r.name}:${r.state}:${r.pr ?? ''}`)).toEqual(['Fix login PR #88:running:88', 'Review:input:'])
+  expect(JSON.stringify(rows).includes('abc')).toBe(false)
+  expect(parseTerminalWorkers(out, [], new Set(), NOW, 30)).toEqual([])
+  expect(() => parseConfig(JSON.stringify({ coordinators: [{ name: 'A', worktrees: '/w' }] }))).toThrow()
+})
+
 test('workers: one that leaves the dispatched list shows as done for an hour, then drops', () => {
   const prev = [{ name: 'w-a', state: 'running' as const, pr: '5' }, { name: 'w-b', state: 'stale' as const }]
   const now1 = carryDone(prev, [{ name: 'w-b', state: 'running' }], NOW)
   expect(now1).toEqual([{ name: 'w-b', state: 'running' }, { name: 'w-a', state: 'done', pr: '5', doneAt: NOW }])
   expect(carryDone(now1, [], NOW + 30 * 60_000).map(w => w.name)).toEqual(['w-b', 'w-a'])
   expect(carryDone(now1.slice(1), [], NOW + 61 * 60_000)).toEqual([])
+})
+
+test('workers: a retitled terminal is the same worker, and one terminal is never under two coordinators', () => {
+  const prev = [{ name: 'Old title', state: 'running' as const, handle: 'term_x' }]
+  expect(carryDone(prev, [{ name: 'New title', state: 'running', handle: 'term_x' }], NOW).map(w => w.name)).toEqual(['New title'])
+  expect(carryDone(prev, [], NOW)).toEqual([{ name: 'Old title', state: 'done', doneAt: NOW, handle: 'term_x' }])
+  const out = JSON.stringify({ result: { terminals: [{ handle: 'term_x', title: 'T', worktreePath: '/x/app-other', agentIdentity: 'claude', lastOutputAt: NOW }] } })
+  const seen = new Set<string>()
+  const a = parseTerminalWorkers(out, ['/x/app'], seen, NOW, 30)
+  for (const w of a) seen.add(w.handle!)
+  expect([a.length, parseTerminalWorkers(out, ['/x/app-other'], seen, NOW, 30).length]).toEqual([1, 0])
 })
 
 test('environments: status field read, anything else is ?', () => {
@@ -171,7 +204,7 @@ test('the pane shows all seven panels from the config, on every surface', async 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    for (const words of [/Coordinators/, /Alpha  term_alpha  model-x medium/, /w-input  waiting for input/, /stale \d+m  #1234/, /Dev  ready 200  normal/, /web 1/, /#42/, /claude: session 4%/, /load 4\.0  free 48%/, /Approve the release/, /Alpha  hello chief/]) {
+    for (const words of [/^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /4\.0/, /48%/, /☐ Approve the release/, /hello chief/, /1 need you/, /● Side task in a worktree/]) {
       expect((await ui.find({ type: 'Text', text: words }))?.text).toMatch(words)
     }
     expect(await ui.find({ type: 'Text', text: /codex/ })).toBe(undefined)
@@ -182,11 +215,28 @@ test('the pane shows all seven panels from the config, on every surface', async 
   expect(runs.some(a => a.includes('--run') && a.includes('run_a'))).toBe(true)
 })
 
+test('a section header collapses and opens its section; PR numbers link to GitHub', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'refresh' })).toBeDefined()
+  expect((await ui.find({ type: 'Link', text: /#42/ }))?.props.href).toBe('https://github.com/example-org/web/pull/42')
+  expect((await ui.find({ type: 'Link', text: /open/ }))?.props.href).toBe('https://x.test/3')
+  expect(await ui.find({ type: 'Text', text: /w-input/ })).toBeDefined()
+  await ui.press({ key: 'toggle-coordinators' })
+  expect(await ui.find({ type: 'Text', text: /w-input/ })).toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: /^Coordinators$/ })).toBeDefined()
+  await ui.press({ key: 'toggle-coordinators' })
+  expect(await ui.find({ type: 'Text', text: /w-input/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('an environment that does not answer reads as down, never a crash', async ($, on) => {
   engine(on, { failEnv: true })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Dev  ready down/ }))?.text).toMatch(/down/)
+  expect((await ui.find({ type: 'Text', text: /▼ Dev/ }))?.text).toMatch(/Dev/)
+  expect((await ui.find({ type: 'Text', text: /^ready down$/ }))?.text).toMatch(/down/)
   await ui.unmount()
 })
 
@@ -194,9 +244,10 @@ test('a section whose first read fails says so instead of waiting', async ($, on
   engine(on, { failOrca: true })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Coordinators/ }))?.text).toMatch(/never read stale: orca exited 1/)
+  expect((await ui.find({ type: 'Text', text: /never read/ }))?.text).toBe('never read')
+  expect((await ui.find({ type: 'Text', text: /stale:/ }))?.text).toMatch(/⚠ stale: orca exited 1/)
   // The other sections still draw.
-  expect((await ui.find({ type: 'Text', text: /Dev  ready 200/ }))?.text).toMatch(/normal/)
+  expect((await ui.find({ type: 'Text', text: /^normal$/ }))?.text).toBe('normal')
   await ui.unmount()
 })
 
@@ -204,7 +255,7 @@ test('a status page that is not JSON reads as ?, and the other rows stay', async
   engine(on, { htmlStatus: true })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Dev  ready 200/ }))?.text).toMatch(/Dev  ready 200  \?  at/)
+  expect((await ui.find({ type: 'Text', text: /^\?$/ }))?.text).toBe('?')
   expect(await ui.find({ type: 'Text', text: /html|Bad Gateway/ })).toBe(undefined)
   await ui.unmount()
 })
@@ -213,7 +264,7 @@ test('unreadable output is reported without quoting it', async ($, on) => {
   engine(on, { garbageOrca: true })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /Coordinators/ }))?.text).toMatch(/stale: output not readable/)
+  expect((await ui.find({ type: 'Text', text: /stale:/ }))?.text).toMatch(/stale: output not readable/)
   expect(await ui.find({ type: 'Text', text: /abc123/ })).toBe(undefined)
   await ui.unmount()
 })
@@ -233,7 +284,7 @@ test('the band sums it up while the pane is closed', async ($, on) => {
   on('ui.render', ($: any, e: any) => $.ui.resolve(e).Text({ children: 'engine' }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'chief-engineer', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 160 } } as any)
-  const text = (await band.find({ type: 'Text', text: /chief:/ }))?.text ?? ''
-  expect(text).toMatch(/3 workers · 2 need you · envs 1\/1 ready · 1 PRs/)
+  const text = (await band.find({ type: 'Text', text: /◆ chief/ }))?.text ?? ''
+  expect(text).toMatch(/● 4 workers  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs/)
   await band.unmount()
 })
