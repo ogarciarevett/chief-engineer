@@ -20,5 +20,6 @@
   "usageProviders": ["claude", "codex", "cursor"],
   "mailbox": "/path/to/mailbox/inbox.jsonl",
   "ownerSteps": "/path/to/owner-steps.md",
+  "session": { "orcaTerminalHandle": "term_00000000-0000-0000-0000-000000000001" },
   "limits": { "load": 30, "swapGB": 8, "memoryPercent": 60 }
 }

@@ -21,7 +21,8 @@ claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer 
 ## Quick start
 
 ```
-# 1. Get the example config, then put your coordinators, repos and environments in it
+# 1. Get the example config, then put your coordinators, repos and environments in it,
+#    and set "session" to the one session that runs the pane (no key: no session runs it)
 mkdir -p ~/.config/chief-engineer
 curl -fsSL https://raw.githubusercontent.com/ogarciarevett/chief-engineer/main/config.example.json -o ~/.config/chief-engineer/config.json
 
@@ -126,11 +127,12 @@ columns (handles, models, times, meters) drop out.
 | `usageProviders` | `[]` | Providers to keep from that output; empty keeps every line. |
 | `mailbox` | `""` | Path (`~/` allowed, as for `ownerSteps`) of a JSONL file with `{ at, from, subject }` per line. `from` values that match a coordinator's `terminal` show its name. |
 | `ownerSteps` | `""` | Path of the Markdown file of open owner steps. |
+| `session` | none | The one session that runs the pane: `{ "orcaTerminalHandle": "term_..." }` (matched against `ORCA_TERMINAL_HANDLE`) or `{ "cwd": "/path" }` (the session directory). Every other session registers nothing and starts no process; with no key, no session does. |
 | `limits` | `{ "load": 30, "swapGB": 8, "memoryPercent": 60 }` | Machine limits. Load over `load` is overloaded; swap and memory bars turn red over theirs. Set only the ones you change. |
 
 ## Rules it keeps
 
-- Read-only commands only: `orca ... list`, `orca terminal read --screen`, `gh pr list`, `sysctl`, `memory_pressure`, `top -l 2 -n 0`,
+- Read-only commands only: `orca ... list`, `orca terminal read --screen`, `gh pr list`, `sysctl`, `memory_pressure`, `ps -A -o %cpu`,
   `tail`, your usage command, and HTTP GETs.
 - No paid API calls and no hosted service.
 - It never shows message bodies, terminal output or environment variables.
@@ -158,7 +160,7 @@ Implemented and covered by `claude plugin test` (22 tests):
 Pending:
 
 - Coordinator context percent: not shown; no cheap read-only source yet.
-- Machine readings use macOS tools (`sysctl`, `memory_pressure`, `top`); Linux
+- Machine readings use macOS tools (`sysctl`, `memory_pressure`, `ps`); Linux
   is not supported yet.
 - Done is not split from failed for workers that leave the dispatched list.
 - Sections cut long lines to the pane width; the pane scrolls with the arrows while it has the keyboard.

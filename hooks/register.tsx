@@ -8,6 +8,8 @@ import type { Config, Section, Snapshot, WorkerRow } from '../types'
 import {
   carryDone,
   expandHome,
+  cachedMachine,
+  isChiefSession,
   isPermissionPrompt,
   mask,
   mergeWorkers,
@@ -32,6 +34,8 @@ import {
 const PANE = 'chief-engineer'
 const TITLE = 'Chief engineer'
 const LOCAL_MS = 10_000
+// Shared by every pane on the Mac, so the machine is read once per TTL however many are open.
+const MACHINE_CACHE = '~/Library/Caches/chief-engineer/machine.json'
 const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-2' })
 const isPaneOpen = atom({ plugin: 'chief-engineer', key: 'isPaneOpen' } as const, false)
 const collapsed = atom({ plugin: 'chief-engineer', key: 'collapsed' } as const, [] as string[])
@@ -125,13 +129,17 @@ async function readLocal($: $, c: Config) {
   const names = new Map(c.coordinators.filter(x => x.terminal).map(x => [x.terminal!, x.name]))
   await Promise.all([
     refresh($, 'machine', async () => {
-      const [sysctl, pressure, top] = await Promise.all([
+      const cache = expandHome(MACHINE_CACHE, (await $.env.get('HOME')) ?? '')
+      const hit = await $.fs.read(cache).then(t => cachedMachine(t, Date.now()), () => undefined)
+      if (hit) return hit
+      const [sysctl, pressure, ps] = await Promise.all([
         run($, ['/usr/sbin/sysctl', '-n', 'vm.loadavg', 'vm.swapusage', 'hw.ncpu', 'hw.memsize']),
         run($, ['/usr/bin/memory_pressure']),
-        // Two one-second samples: the first is an average since boot.
-        run($, ['/usr/bin/top', '-l', '2', '-n', '0', '-s', '1']),
+        run($, ['/bin/ps', '-A', '-o', '%cpu']),
       ])
-      return parseMachine(sysctl, pressure, top)
+      const m = parseMachine(sysctl, pressure, ps)
+      await $.fs.write(cache, JSON.stringify({ at: Date.now(), value: m })).catch(() => {})
+      return m
     }),
     c.ownerSteps ? refresh($, 'steps', async () => parseSteps(await $.fs.read(c.ownerSteps))) : undefined,
     c.mailbox ? refresh($, 'mail', async () => parseMail(await run($, ['/usr/bin/tail', '-n', '5', c.mailbox]), names)) : undefined,
@@ -177,6 +185,9 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
+    // Every other session on the Mac registers nothing and starts no process.
+    const c = await readConfig($, configPath).catch(() => undefined)
+    if (!c || !isChiefSession(c, await $.env.get('ORCA_TERMINAL_HANDLE'), e.cwd)) return r
     await $.command.register({ name: 'chief', description: 'Open the chief engineer pane' }).catch(() => {})
     void open($).catch(() => {})
     void tick($).catch(() => {})

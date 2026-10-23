@@ -24,6 +24,8 @@ export type Config = {
   mailbox: string
   ownerSteps: string
   limits: Limits
+  // The one session that runs the pane: matched by ORCA_TERMINAL_HANDLE or the session directory.
+  session?: { orcaTerminalHandle?: string; cwd?: string }
 }
 
 // A bar turns red over its limit; load over `load` reads overloaded.
