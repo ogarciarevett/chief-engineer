@@ -44,7 +44,7 @@ While the pane is closed, a one-line band above the prompt sums up what needs yo
   service, no paid API calls, no API key.
 - **It never shows secrets.** No message bodies, terminal output or environment
   variables; phone-like numbers are masked.
-- **Tested.** 21 tests run in CI with `claude plugin test`; the status list below
+- **Tested.** 22 tests run in CI with `claude plugin test`; the status list below
   says what is done and what is not.
 
 ## Install details
@@ -88,7 +88,7 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
    - `swap used 5.8 of 7.2 GB`: memory moved to disk. Over 8 GB the Mac slows down.
 
    Load and swap rows show this help in one line when you press them. A bar is
-   yellow from 80 % of its limit and red over it (`limits` in the config).
+   yellow from 80 % of its limit and red over it (`limits` in the config). The CPU bar uses a fixed limit of 90 %.
 6. **Owner steps**: every open `- ` item of a Markdown file you maintain; `- [x]`
    items are hidden.
 7. **Mailbox**: the last 5 messages of an append-only JSONL file (time, sender,
@@ -140,7 +140,7 @@ columns (handles, models, times, meters) drop out.
 
 ## Status
 
-Implemented and covered by `claude plugin test` (21 tests):
+Implemented and covered by `claude plugin test` (22 tests):
 
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, terminal workers, worker merge, permission dialogs, environments, PRs,

@@ -32,7 +32,7 @@ import {
 const PANE = 'chief-engineer'
 const TITLE = 'Chief engineer'
 const LOCAL_MS = 10_000
-const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-1' })
+const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-2' })
 const isPaneOpen = atom({ plugin: 'chief-engineer', key: 'isPaneOpen' } as const, false)
 const collapsed = atom({ plugin: 'chief-engineer', key: 'collapsed' } as const, [] as string[])
 const expanded = atom({ plugin: 'chief-engineer', key: 'expanded' } as const, [] as string[])
@@ -391,10 +391,10 @@ export const register: Register = (on, options) => {
           const line = (id: string, label: string, frac: number, color: string, word?: string, help?: string) => {
             const isOpen = full.includes(id)
             const label_ = <Text tabular wrap="truncate-end">{label}</Text>
-            // The word column is as wide as 'overloaded' on every row, so the bars line up.
+            // With bars, the word column is as wide as 'overloaded' on every row, so the bars line up.
             const body = row(
               help ? <Button key={`help-${id}`} plain onPress={() => update($, expanded, list => (isOpen ? list.filter(x => x !== id) : [...list, id]))}>{label_}</Button> : label_,
-              <Text tabular><Text color={color}>{(word ?? '').padStart(10)} </Text>{isWide ? meter(frac, color) : ''}</Text>,
+              <Text tabular><Text color={color}>{isWide ? `${(word ?? '').padStart(10)} ` : word ? `${word} ` : ''}</Text>{isWide ? meter(frac, color) : ''}</Text>,
             )
             if (!isOpen) return body
             return (
