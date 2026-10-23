@@ -2,7 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   carryDone,
+  isPermissionPrompt,
   mask,
+  mergeWorkers,
   machineLevel,
   parseConfig,
   parseEnvStatus,
@@ -112,6 +114,32 @@ test('workers: a retitled terminal is the same worker, and one terminal is never
   expect([a.length, parseTerminalWorkers(out, ['/x/app-other'], seen, NOW, 30).length]).toEqual([1, 0])
 })
 
+test('workers: one row per name, the live state wins over a carried done one', () => {
+  const rows = mergeWorkers([
+    { name: 'SC-devnet', state: 'done', doneAt: NOW - 60_000, handle: 'term_old' },
+    { name: 'SC-devnet', state: 'running', handle: 'term_new' },
+    { name: 'w-two', state: 'running', handle: 'term_a' },
+    { name: 'w-two', state: 'permission', handle: 'term_b' },
+    { name: 'w-gone', state: 'done', doneAt: NOW },
+    { name: 'w-gone', state: 'done', doneAt: NOW - 1 },
+  ])
+  expect(rows.map(r => `${r.name}:${r.state}`)).toEqual(['w-two:permission', 'SC-devnet:running', 'w-gone:done'])
+})
+
+const screen = (...tail: string[]) => JSON.stringify({ result: { terminal: { handle: 'term_x', tail, source: 'screen' } } })
+
+test('permission: a dialog at the bottom of the screen is found, the text never leaves', () => {
+  expect([
+    screen('chat', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', ' Esc to cancel'),
+    screen('  Allow command?', '  rm -rf build'),
+    screen(' Do you trust the files in this folder?', ' ❯ 1. Yes, proceed'),
+    screen('Do you want to proceed?', ...Array(25).fill('later output'), '> '),
+    screen('all done, PR #12 open', 'token=abc', '> '),
+    screen(' Pick a model', ' Esc to cancel'),
+    'token=abc not json',
+  ].map(isPermissionPrompt)).toEqual([true, true, true, false, false, false, false])
+})
+
 test('environments: status field read, anything else is ?', () => {
   expect(parseEnvStatus('{"state":"normal"}', 'state')).toBe('normal')
   expect(parseEnvStatus('{"state":3}', 'state')).toBe('?')
@@ -125,6 +153,8 @@ test('prs: sorted, older than 24 h flagged', () => {
 test('usage: keeps the named providers only', () => {
   expect(parseUsage('claude: weekly 29%\ncodex: weekly 22%\n\n', ['claude'])).toEqual(['claude: weekly 29%'])
   expect(parseUsage('a: 1\nb: 2', []).length).toBe(2)
+  const out = 'antigravity: session 0% (resets ?); weekly 100% (resets ?); Gemini Models · Weekly Limit Remaining: 100%; Claude and GPT models · Five Hour Limit Remaining: 0%\nclaude: session 27% (resets 10:49 PM); weekly 35% (resets Thu 5:59 PM)\ngemini: error: not signed in'
+  expect(parseUsage(out, [])).toEqual(['antigravity: session 0%; weekly 100%', 'claude: session 27% (resets 10:49 PM); weekly 35% (resets Thu 5:59 PM)', 'gemini: error: not signed in'])
 })
 
 test('machine: parsed and coloured by the thresholds', () => {
@@ -173,7 +203,9 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
     const a = e.argv.join(' ')
     if (opts.garbageOrca && a.startsWith('orca')) return { value: { exitCode: 0, stdout: 'token=abc123 not json', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (opts.failOrca && a.startsWith('orca')) return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    const stdout = a.includes('terminal list')
+    const stdout = a.includes('terminal read')
+      ? screen(...(['term_t1', 'term_alpha'].includes(e.argv[4]) ? ['Do you want to proceed?', '❯ 1. Yes', 'Esc to cancel'] : ['SECRET=hunter2', '> ']))
+      : a.includes('terminal list')
       ? terminalsAt(Date.now())
       : a.includes('task-list')
         ? TASKS.replaceAll('2026-10-23T15:30:00Z', new Date(Date.now() - 60_000).toISOString())
@@ -204,15 +236,17 @@ test('the pane shows all seven panels from the config, on every surface', async 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    for (const words of [/^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /4\.0/, /48%/, /☐ Approve the release/, /hello chief/, /1 need you/, /● Side task in a worktree/]) {
+    for (const words of [/^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /4\.0/, /48%/, /☐ Approve the release/, /hello chief/, /1 need you/, /■ Side task in a worktree/, /^■ waiting for permission$/, /■ 2 permission/, /✓ \+1 done/]) {
       expect((await ui.find({ type: 'Text', text: words }))?.text).toMatch(words)
     }
     expect(await ui.find({ type: 'Text', text: /codex/ })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /hunter2|Esc to cancel/ })).toBe(undefined)
     await ui.unmount()
   }
   // Read-only commands only.
   for (const argv of runs) expect(['orca', 'gh', '/usr/sbin/sysctl', '/usr/bin/memory_pressure', '/usr/bin/tail', '/bin/usage']).toContain(argv[0])
   expect(runs.some(a => a.includes('--run') && a.includes('run_a'))).toBe(true)
+  expect(runs.filter(a => a.includes('--screen')).map(a => a[4]).sort()).toEqual(['term_alpha', 'term_t1', 'term_w1', 'term_w2', 'term_w3'])
 })
 
 test('a section header collapses and opens its section; PR numbers link to GitHub', async ($, on) => {
@@ -228,6 +262,14 @@ test('a section header collapses and opens its section; PR numbers link to GitHu
   expect(await ui.find({ type: 'Text', text: /^Coordinators$/ })).toBeDefined()
   await ui.press({ key: 'toggle-coordinators' })
   expect(await ui.find({ type: 'Text', text: /w-input/ })).toBeDefined()
+  // A cut-off row opens in full on a press and cuts again on the next.
+  const step = async () => (await ui.find({ type: 'Text', text: /Approve the release/ }))?.props.wrap
+  expect(await step()).toBe('truncate-end')
+  await ui.press({ key: 'expand-step-Approve the release https://x.test/3' })
+  expect(await step()).toBe('wrap')
+  await ui.press({ key: 'expand-step-Approve the release https://x.test/3' })
+  expect(await step()).toBe('truncate-end')
+  expect(await ui.find({ type: 'Button', key: 'expand-worker-term_w1' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -285,6 +327,6 @@ test('the band sums it up while the pane is closed', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'chief-engineer', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 160 } } as any)
   const text = (await band.find({ type: 'Text', text: /◆ chief/ }))?.text ?? ''
-  expect(text).toMatch(/● 4 workers  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs/)
+  expect(text).toMatch(/● 4 workers  ■ 2 permission  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs/)
   await band.unmount()
 })

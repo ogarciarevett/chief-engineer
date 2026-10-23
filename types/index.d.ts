@@ -13,6 +13,7 @@ export type Config = {
   coordinators: Coordinator[]
   workersCommand: string[]
   terminalsCommand: string[]
+  screenCommand: string[]
   environments: { name: string; url: string }[]
   readyPath: string
   statusPath: string
@@ -24,7 +25,7 @@ export type Config = {
   ownerSteps: string
 }
 
-export type WorkerState = 'running' | 'input' | 'stale' | 'done' | 'failed'
+export type WorkerState = 'permission' | 'running' | 'input' | 'stale' | 'done' | 'failed'
 
 export type WorkerRow = {
   name: string
@@ -43,6 +44,7 @@ export type CoordinatorRow = {
   model: string
   quietMinutes?: number
   workers: WorkerRow[]
+  isWaitingPermission?: boolean
 }
 
 export type EnvRow = { name: string; ready: string; state: string; checkedAt: number }
@@ -67,6 +69,6 @@ export type Snapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[] }
+    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[]; expanded: string[] }
   }
 }
