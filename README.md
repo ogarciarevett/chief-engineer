@@ -1,42 +1,63 @@
 # chief-engineer
 
-A Claude Code mod for whoever runs several coordinators and their workers at once.
-It keeps one sidebar beside the chat with the seven things a chief checks all
-day, live, and a one-line band above the prompt while the pane is closed.
+One live panel beside your Claude Code chat for people who run many coding agents at once.
 
-![The panel with demo data](docs/screenshot.png)
+[![ci](https://github.com/ogarciarevett/chief-engineer/actions/workflows/ci.yml/badge.svg)](https://github.com/ogarciarevett/chief-engineer/actions/workflows/ci.yml)
+![version 0.2.1](https://img.shields.io/badge/version-0.2.1-blue)
+![MIT](https://img.shields.io/badge/licence-MIT-green)
+
+![A Claude Code session in a terminal with the chief-engineer panel docked on the right](docs/screenshot.png)
+
+*A normal Claude Code session (left) with the panel docked on the right. Demo data:
+two coordinators, their workers, three environments, open PRs, usage, machine load,
+owner steps and the mailbox.*
 
 ## Install
-
-From a shell:
 
 ```
 claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer --scope user --config configPath=$HOME/.config/chief-engineer/config.json
 ```
 
-Or at the prompt of a session: `/plugin install chief-engineer --marketplace ogarciarevett/chief-engineer`
-(answer `y` to add the marketplace, then pick a scope).
-
-Then write the config at that path and edit it (see the config reference below):
+## Quick start
 
 ```
+# 1. Get the example config, then put your coordinators, repos and environments in it
 mkdir -p ~/.config/chief-engineer
 curl -fsSL https://raw.githubusercontent.com/ogarciarevett/chief-engineer/main/config.example.json -o ~/.config/chief-engineer/config.json
+
+# 2. Start Claude Code fullscreen in a terminal at least 110 columns wide
+CLAUDE_CODE_NO_FLICKER=1 claude
 ```
 
-Keep it outside any repo. To change the path later,
+The panel docks on the right of the chat. In a normal (not fullscreen) session it
+opens inline above the prompt; `/chief` opens it at any time.
+While the pane is closed, a one-line band above the prompt sums up what needs you.
+
+## Why it is different
+
+- **One screen, not seven.** Workers, environments, PRs, usage limits, machine load,
+  your open steps and the mailbox stay beside the chat you are already in.
+- **It finds stuck agents.** A coordinator or worker that sits on a permission
+  dialog turns red and moves to the top.
+- **Read-only.** It runs only list and read commands, your own usage command,
+  and HTTP GETs. No hosted
+  service, no paid API calls, no API key.
+- **It never shows secrets.** No message bodies, terminal output or environment
+  variables; phone-like numbers are masked.
+- **Tested.** 21 tests run in CI with `claude plugin test`; the status list below
+  says what is done and what is not.
+
+## Install details
+
+At the prompt of a session you can also run
+`/plugin install chief-engineer --marketplace ogarciarevett/chief-engineer`
+(answer `y` to add the marketplace, then pick a scope).
+
+Keep the config outside any repo. To change its path later,
 use `/config` (field `Config file` of `chief-engineer`) or `~/.claude/settings.json`:
 
 ```json
 { "pluginConfigs": { "chief-engineer": { "options": { "configPath": "/absolute/path/config.json" } } } }
-```
-
-Start a session. The panel opens inline above the prompt; `/chief` opens it at any
-time. For the sidebar on the right of the chat, start it fullscreen in a terminal
-at least 110 columns wide:
-
-```
-CLAUDE_CODE_NO_FLICKER=1 claude
 ```
 
 To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`.
