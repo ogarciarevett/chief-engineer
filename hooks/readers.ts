@@ -185,18 +185,21 @@ export function parseUsage(stdout: string, providers: string[]): string[] {
 }
 
 // `ps -A -o %cpu` prints a header and one percent per process; their sum over the cores is the Mac's CPU use.
+// ps follows the locale, so `0,4` is read as 0.4.
 export function parseCpu(ps: string, cores: number): number {
-  const pcts = ps.split('\n').map(l => l.trim()).filter(l => /^[\d.]+$/.test(l)).map(Number)
+  const pcts = ps.split('\n').map(l => l.trim().replace(',', '.')).filter(l => /^\d+(\.\d+)?$/.test(l)).map(Number)
   if (!pcts.length || !cores) return NaN
   return Math.round(Math.min(100, pcts.reduce((a, b) => a + b, 0) / cores))
 }
 
 export const MACHINE_TTL_MS = 15_000
+const MACHINE_KEYS = ['load', 'cores', 'cpuPercent', 'memoryPercent', 'memoryGB', 'swapUsedGB', 'swapTotalGB'] as const
+const isMachine = (v: unknown): v is Machine => typeof v === 'object' && v !== null && MACHINE_KEYS.every(k => Number.isFinite((v as Machine)[k]))
 // The shared cache `{ at, value }`: its value while it is younger than the TTL, else undefined.
 export function cachedMachine(text: string, now: number): Machine | undefined {
   try {
     const c = JSON.parse(text)
-    return typeof c?.at === 'number' && now - c.at >= 0 && now - c.at < MACHINE_TTL_MS && typeof c.value?.load === 'number' ? c.value : undefined
+    return typeof c?.at === 'number' && now - c.at >= 0 && now - c.at < MACHINE_TTL_MS && isMachine(c.value) ? c.value : undefined
   } catch {
     return undefined
   }

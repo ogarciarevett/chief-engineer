@@ -185,6 +185,8 @@ test('CPU: the ps percents summed over the cores, capped at 100', () => {
   expect(parseCpu(' %CPU\n1800.0\n90.0\n', 18)).toBe(100)
   expect(parseCpu(' %CPU\n', 18)).toBeNaN()
   expect(parseCpu('garbage', 18)).toBeNaN()
+  // A comma-decimal locale.
+  expect(parseCpu(' %CPU\n600,0\n 80,5\n  3,5\n', 18)).toBe(38)
 })
 
 test('machine cache: fresh within the TTL, stale or unreadable is a miss', () => {
@@ -193,7 +195,7 @@ test('machine cache: fresh within the TTL, stale or unreadable is a miss', () =>
   expect(cachedMachine(text, NOW + MACHINE_TTL_MS - 1)).toEqual(m)
   expect(cachedMachine(text, NOW + MACHINE_TTL_MS)).toBe(undefined)
   expect(cachedMachine(text, NOW - 1)).toBe(undefined)
-  for (const bad of ['', 'not json', '{}', JSON.stringify({ at: NOW })]) expect(cachedMachine(bad, NOW)).toBe(undefined)
+  for (const bad of ['', 'not json', '{}', JSON.stringify({ at: NOW }), JSON.stringify({ at: NOW, value: { load: 1 } })]) expect(cachedMachine(bad, NOW)).toBe(undefined)
 })
 
 test('session: only the one the config names, by terminal or directory; none without a key', () => {
