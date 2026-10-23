@@ -7,6 +7,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Config, Section, Snapshot } from '../types'
 import {
   carryDone,
+  expandHome,
+  mask,
   coordinatorRow,
   envRow,
   machineLevel,
@@ -36,7 +38,8 @@ async function refresh<K extends Key>($: $, key: K, read: () => Promise<NonNulla
     const value = await read()
     await update($, snapshot, s => ({ ...s, [key]: { value, at: Date.now() } }))
   } catch (err) {
-    const error = err instanceof Error ? err.message.slice(0, 120) : 'read failed'
+    // A parse error quotes the input it choked on, so it is replaced, never shown.
+    const error = err instanceof SyntaxError ? 'output not readable' : err instanceof Error ? mask(err.message).slice(0, 120) : 'read failed'
     await update($, snapshot, s => ({ ...s, [key]: { ...(s[key] ?? { at: 0 }), error } }))
   }
 }
@@ -51,7 +54,8 @@ async function run($: $, argv: string[], timeoutMs = 20_000) {
 
 async function readConfig($: $, path: string) {
   const home = (await $.env.get('HOME')) ?? ''
-  return parseConfig(await $.fs.read(path.replace(/^~(?=\/)/, home)))
+  const c = parseConfig(await $.fs.read(expandHome(path, home)))
+  return { ...c, mailbox: expandHome(c.mailbox, home), ownerSteps: expandHome(c.ownerSteps, home) }
 }
 
 async function readRemote($: $, c: Config) {
@@ -74,7 +78,7 @@ async function readRemote($: $, c: Config) {
           const base = env.url.replace(/\/$/, '')
           const [ready, status] = await Promise.all([
             $.http.fetch(base + c.readyPath).then(r => r.status, () => 'down'),
-            $.http.fetch(base + c.statusPath).then(r => parseEnvStatus(r.text, c.statusField), () => '?'),
+            $.http.fetch(base + c.statusPath).then(r => parseEnvStatus(r.text, c.statusField)).catch(() => '?'),
           ])
           return envRow(env.name, ready, status, now())
         }),
@@ -168,6 +172,7 @@ export const register: Register = (on, options) => {
 
     if (!s.config?.value) return <Box flexDirection="column">{line(s.config?.error ? `Config ${configPath}: ${s.config.error}` : `No config read yet from ${configPath}`, s.config?.error ? 'error' : 'warning')}</Box>
 
+    const cfg = s.config.value
     const m = s.machine?.value
     return (
       <Box flexDirection="column">
@@ -185,20 +190,27 @@ export const register: Register = (on, options) => {
         {head('Environments', s.environments)}
         {(s.environments?.value ?? []).map(env => line(`${env.name}  ready ${env.ready}  ${env.state}  at ${new Date(env.checkedAt).toISOString().slice(11, 16)}Z`, env.ready === '200' ? (env.state === 'normal' ? 'success' : 'warning') : 'error'))}
         {head('Open PRs', s.prs)}
-        {(s.prs?.value ?? []).map(r => (
-          <Text>
-            {cut(r.repo.split('/').pop() ?? r.repo, 24)} {r.prs.length}{' '}
-            {r.prs.map(p => <Text color={p.isOld ? 'warning' : undefined}>#{p.number} </Text>)}
-          </Text>
-        ))}
-        {head('Usage', s.usage)}
-        {(s.usage?.value ?? []).map(u => line(u, /error/.test(u) ? 'subtle' : undefined))}
+        {(s.prs?.value ?? []).map(r => {
+          const name = `${cut(r.repo.split('/').pop() ?? r.repo, 24)} ${r.prs.length} `
+          // As many numbers as fit the width, then a count of the rest.
+          let room = w - name.length - 6
+          const shown = r.prs.filter(p => (room -= `#${p.number} `.length) >= 0)
+          return (
+            <Text>
+              {name}
+              {shown.map(p => <Text color={p.isOld ? 'warning' : undefined}>#{p.number} </Text>)}
+              {shown.length < r.prs.length ? `+${r.prs.length - shown.length}` : ''}
+            </Text>
+          )
+        })}
+        {cfg.usageCommand.length ? head('Usage', s.usage) : ''}
+        {cfg.usageCommand.length ? (s.usage?.value ?? []).map(u => line(u, /error/.test(u) ? 'subtle' : undefined)) : ''}
         {head('Machine', s.machine)}
         {m ? line(`load ${m.load.toFixed(1)}  free ${m.freePercent}%`, machineLevel(m)) : line('no reading yet', 'subtle')}
-        {head('Owner steps', s.steps)}
-        {s.steps?.value?.length ? s.steps.value.map(t => line(`• ${t}`)) : line('none open', 'subtle')}
-        {head('Mailbox', s.mail)}
-        {(s.mail?.value ?? []).map(r => line(`${r.at}  ${r.from}  ${r.subject}`))}
+        {cfg.ownerSteps ? head('Owner steps', s.steps) : ''}
+        {cfg.ownerSteps ? (s.steps?.value?.length ? s.steps.value.map(t => line(`• ${t}`)) : line('none open', 'subtle')) : ''}
+        {cfg.mailbox ? head('Mailbox', s.mail) : ''}
+        {cfg.mailbox ? (s.mail?.value ?? []).map(r => line(`${r.at}  ${r.from}  ${r.subject}`)) : ''}
       </Box>
     )
   })

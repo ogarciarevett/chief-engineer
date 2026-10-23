@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   carryDone,
+  mask,
   machineLevel,
   parseConfig,
   parseEnvStatus,
@@ -114,24 +115,30 @@ test('mailbox: last 5, newest first, names mapped, body never kept', () => {
   expect(rows.map(r => r.subject)).toEqual(['s6', 's5', 's4', 's3', 's2'])
   expect(rows[0]).toEqual({ at: '16:06', from: 'Alpha', subject: 's6' })
   expect(JSON.stringify(rows).includes('private')).toBe(false)
+  // Phone-like numbers are masked; times and PR numbers stay.
+  const phone = parseMail(JSON.stringify({ from: '+34612345678', at: '2026-10-23T16:00:00Z', subject: 'call +34 612 345 678 about PR #1766' }), new Map())
+  expect(phone[0]).toEqual({ at: '16:00', from: '[number]', subject: 'call [number] about PR #1766' })
+  expect(mask('2026-10-23 16:00 #12345')).toBe('2026-10-23 16:00 #12345')
 })
 
 // Stands for the engine beneath the mod: every read answers from fixtures.
-function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean } = {}) {
+function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object } = {}) {
   const runs: string[][] = []
   mock.clock(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'chief' } }))
   on('ui.open', () => ({ value: { isPlaced: opts.isPlaced ?? true } }))
   on('env.get', () => ({ value: '/home/me' }))
-  on('fs.read', (_$: any, e: any) => ({ value: e.path.endsWith('.md') ? '- Approve the release https://x.test/3\n' : JSON.stringify(CONFIG) }))
+  on('fs.read', (_$: any, e: any) => ({ value: e.path.endsWith('.md') ? '- Approve the release https://x.test/3\n' : JSON.stringify(opts.config ?? CONFIG) }))
   on('http.fetch', (_$: any, e: any) => {
     if (opts.failEnv) throw new Error('offline')
-    return { value: e.url.endsWith('/ready') ? { status: 200, ok: true, headers: {}, text: '' } : { status: 200, ok: true, headers: {}, text: '{"state":"normal"}' } }
+    const body = opts.htmlStatus ? '<html>502 Bad Gateway</html>' : '{"state":"normal"}'
+    return { value: e.url.endsWith('/ready') ? { status: 200, ok: true, headers: {}, text: '' } : { status: 200, ok: true, headers: {}, text: body } }
   })
   on('process.run', (_$: any, e: any) => {
     runs.push(e.argv)
     const a = e.argv.join(' ')
+    if (opts.garbageOrca && a.startsWith('orca')) return { value: { exitCode: 0, stdout: 'token=abc123 not json', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (opts.failOrca && a.startsWith('orca')) return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     const stdout = a.includes('terminal list')
       ? terminalsAt(Date.now())
@@ -190,6 +197,33 @@ test('a section whose first read fails says so instead of waiting', async ($, on
   expect((await ui.find({ type: 'Text', text: /Coordinators/ }))?.text).toMatch(/never read stale: orca exited 1/)
   // The other sections still draw.
   expect((await ui.find({ type: 'Text', text: /Dev  ready 200/ }))?.text).toMatch(/normal/)
+  await ui.unmount()
+})
+
+test('a status page that is not JSON reads as ?, and the other rows stay', async ($, on) => {
+  engine(on, { htmlStatus: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Dev  ready 200/ }))?.text).toMatch(/Dev  ready 200  \?  at/)
+  expect(await ui.find({ type: 'Text', text: /html|Bad Gateway/ })).toBe(undefined)
+  await ui.unmount()
+})
+
+test('unreadable output is reported without quoting it', async ($, on) => {
+  engine(on, { garbageOrca: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Coordinators/ }))?.text).toMatch(/stale: output not readable/)
+  expect(await ui.find({ type: 'Text', text: /abc123/ })).toBe(undefined)
+  await ui.unmount()
+})
+
+test('a section left out of the config is hidden', async ($, on) => {
+  engine(on, { config: { ...CONFIG, usageCommand: [], mailbox: '', ownerSteps: '' } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Machine/ }))?.text).toMatch(/Machine/)
+  for (const gone of [/Usage/, /Owner steps/, /Mailbox/]) expect(await ui.find({ type: 'Text', text: gone })).toBe(undefined)
   await ui.unmount()
 })
 

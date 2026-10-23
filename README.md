@@ -72,7 +72,7 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
 | `repos` | `[]` | `owner/repo` names; read with `gh pr list` (your own `gh` login). |
 | `usageCommand` | `[]` | Argv of a command that prints one `provider: ...` line per provider. Empty hides the section. |
 | `usageProviders` | `[]` | Providers to keep from that output; empty keeps every line. |
-| `mailbox` | `""` | Path of a JSONL file with `{ at, from, subject }` per line. `from` values that match a coordinator's `terminal` show its name. |
+| `mailbox` | `""` | Path (`~/` allowed, as for `ownerSteps`) of a JSONL file with `{ at, from, subject }` per line. `from` values that match a coordinator's `terminal` show its name. |
 | `ownerSteps` | `""` | Path of the Markdown file of open owner steps. |
 
 ## Rules it keeps
@@ -81,18 +81,21 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
   `tail`, your usage command, and HTTP GETs.
 - No paid API calls and no hosted service.
 - It never shows message bodies, terminal output or environment variables.
+- Phone-like numbers in any drawn text are masked as `[number]`, and an error
+  from unreadable output is shown as `output not readable`, never quoted.
 - Reads run on timers outside the prompt, so the prompt never waits for them.
 
 ## Status
 
-Implemented and covered by `claude plugin test` (13 tests):
+Implemented and covered by `claude plugin test` (16 tests):
 
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, environments, PRs, usage, machine, owner steps, mailbox).
 - The pane draws all seven sections from a config on the terminal and desktop
   surfaces; only the allowed read-only commands run.
 - An environment that does not answer shows as down instead of failing.
-- A section whose first read fails shows the error; a worker that leaves the
+- A section whose first read fails shows the error; a status page that is not
+  JSON reads as `?`; a section with no source in the config is hidden; a worker that leaves the
   dispatched list shows as done for an hour.
 - The band summary while the pane is closed.
 

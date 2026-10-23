@@ -19,6 +19,11 @@ const DEFAULTS: Config = {
   ownerSteps: '',
 }
 
+// Phone-like numbers never reach the pane: `+` and 9+ digits, or 9+ digits in a row.
+export const mask = (s: string) => s.replace(/\+\d[\d ().-]{7,}\d|\b\d{9,}\b/g, '[number]')
+
+export const expandHome = (path: string, home: string) => path.replace(/^~(?=\/)/, home)
+
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(x => typeof x === 'string')
 
 export function parseConfig(text: string): Config {
@@ -63,7 +68,7 @@ export function parseWorkers(stdout: string, terminals: ReturnType<typeof parseT
   const tasks = (JSON.parse(stdout)?.result?.tasks ?? []) as Task[]
   const rows: WorkerRow[] = []
   for (const t of tasks) {
-    const name = (t.display_name || t.task_title || '?').replace(/\s+/g, ' ')
+    const name = mask((t.display_name || t.task_title || '?').replace(/\s+/g, ' '))
     let subject = ''
     try {
       subject = t.result ? String(JSON.parse(t.result)?.subject ?? '') : ''
@@ -114,7 +119,7 @@ export function parsePrs(repo: string, stdout: string, now: number): RepoRow {
 
 export function parseUsage(stdout: string, providers: string[]): string[] {
   const lines = stdout.split('\n').filter(l => l.trim())
-  return providers.length ? lines.filter(l => providers.some(p => l.startsWith(p + ':'))) : lines
+  return (providers.length ? lines.filter(l => providers.some(p => l.startsWith(p + ':'))) : lines).map(mask)
 }
 
 export function parseMachine(loadavg: string, pressure: string): Machine {
@@ -138,7 +143,7 @@ export function parseSteps(markdown: string): string[] {
     if (/^[-*] /.test(line)) steps.push(line.slice(2).trim())
     else if (/^\s+\S/.test(line) && steps.length) steps[steps.length - 1] += ' ' + line.trim()
   }
-  return steps.filter(s => !/^\[[xX]\]/.test(s)).map(s => s.replace(/^\[ \]\s*/, ''))
+  return steps.filter(s => !/^\[[xX]\]/.test(s)).map(s => mask(s.replace(/^\[ \]\s*/, '')))
 }
 
 // Only time, sender and subject leave the file; the body is never read out.
@@ -149,7 +154,7 @@ export function parseMail(jsonl: string, names: Map<string, string>): MailRow[] 
     try {
       const m = JSON.parse(line)
       const from = String(m.from ?? '?')
-      rows.push({ at: String(m.at ?? '').slice(11, 16), from: names.get(from) ?? from.slice(0, 13), subject: String(m.subject ?? '').replace(/\s+/g, ' ') })
+      rows.push({ at: String(m.at ?? '').slice(11, 16), from: names.get(from) ?? mask(from).slice(0, 13), subject: mask(String(m.subject ?? '').replace(/\s+/g, ' ')) })
     } catch {}
   }
   return rows.slice(-5).reverse()
