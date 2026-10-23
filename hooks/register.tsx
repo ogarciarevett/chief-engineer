@@ -382,10 +382,10 @@ export const register: Register = (on, options) => {
         {cfg.ownerSteps
           ? section('steps', '☐', 'Owner steps', s.steps, () =>
               s.steps?.value?.length
-                ? s.steps.value.map((t, i) => {
+                ? s.steps.value.map(t => {
                     const url = t.match(/https?:\/\/\S+/)?.[0]
                     return row(
-                      fold(`step-${i}`, [<Text color="warning">☐ </Text>, mask(url ? t.replace(url, '').trim() : t)]),
+                      fold(`step-${t.slice(0, 40)}`, [<Text color="warning">☐ </Text>, mask(url ? t.replace(url, '').trim() : t)]),
                       url ? <Link href={url}><Text color="suggestion">open ↗</Text></Link> : undefined,
                     )
                   })

@@ -135,7 +135,9 @@ test('permission: a dialog at the bottom of the screen is found, the text never 
     screen(' Do you trust the files in this folder?', ' ❯ 1. Yes, proceed'),
     screen('Do you want to proceed?', ...Array(25).fill('later output'), '> '),
     screen('all done, PR #12 open', 'token=abc', '> '),
-  ].map(isPermissionPrompt)).toEqual([true, true, true, false, false])
+    screen(' Pick a model', ' Esc to cancel'),
+    'token=abc not json',
+  ].map(isPermissionPrompt)).toEqual([true, true, true, false, false, false, false])
 })
 
 test('environments: status field read, anything else is ?', () => {
@@ -263,9 +265,9 @@ test('a section header collapses and opens its section; PR numbers link to GitHu
   // A cut-off row opens in full on a press and cuts again on the next.
   const step = async () => (await ui.find({ type: 'Text', text: /Approve the release/ }))?.props.wrap
   expect(await step()).toBe('truncate-end')
-  await ui.press({ key: 'expand-step-0' })
+  await ui.press({ key: 'expand-step-Approve the release https://x.test/3' })
   expect(await step()).toBe('wrap')
-  await ui.press({ key: 'expand-step-0' })
+  await ui.press({ key: 'expand-step-Approve the release https://x.test/3' })
   expect(await step()).toBe('truncate-end')
   expect(await ui.find({ type: 'Button', key: 'expand-worker-term_w1' })).toBeDefined()
   await ui.unmount()

@@ -86,7 +86,7 @@ columns (handles, models, times, meters) drop out.
 | `coordinators` | `[]` | `{ name, terminal?, run?, model?, worktrees? }`. `terminal` is the Orca terminal handle; `run` is the orchestration Run that holds its tasks; `worktrees` is a list of path prefixes whose agent terminals count as its workers. |
 | `workersCommand` | `orca orchestration task-list --run {run} --status dispatched --brief --json` | Argv that lists a coordinator's live tasks; `{run}` is replaced. A worker that leaves this list shows as done for an hour. Output over 4 MiB is refused, so keep the filter. |
 | `terminalsCommand` | `orca terminal list --json` | Argv that lists terminals with `lastOutputAt`. The output preview is used only to detect a waiting prompt and is never shown or stored. |
-| `screenCommand` | `orca terminal read --terminal {handle} --screen --json` | Argv that reads the rendered screen of a shown terminal, once per remote poll, to detect a permission dialog (`Do you want to proceed?`, `Esc to cancel`, `Allow command?`, trust prompts) in its last 20 rows. Only the match leaves the reader; the screen is never shown or stored. |
+| `screenCommand` | `orca terminal read --terminal {handle} --screen --json` | Argv that reads the rendered screen of a shown terminal, once per remote poll, to detect a permission dialog (`Do you want to proceed?`, `Esc to cancel`, `Allow command?`, trust prompts) in its last 20 rows (`Allow command?`, or two of the other markers). Only the match leaves the reader; the screen is never shown or stored. |
 | `environments` | `[]` | `{ name, url }`, http or https. |
 | `readyPath` | `/ready` | Path whose HTTP code is shown. |
 | `statusPath` | `/v1/system/status` | Path that returns JSON with the state. |

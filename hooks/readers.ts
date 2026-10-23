@@ -50,14 +50,20 @@ const minutesSince = (ms: number | undefined, now: number) => (ms ? Math.max(0, 
 const INPUT = ['do you want to', '(y/n)', 'press enter', 'allow this', 'approve?']
 const PR = /(?:\bPR\s*#?|#)(\d{2,6})\b/i
 export const ORDER = { permission: 0, input: 1, stale: 2, running: 3, failed: 4, done: 5 }
-const PERMISSION = ['do you want to proceed?', 'esc to cancel', 'allow command?', 'do you trust', '❯ 1. yes']
+const PERMISSION = ['do you want to', 'esc to cancel', 'do you trust', '❯ 1. yes']
 
-// A permission dialog sits at the bottom of the screen; only that a dialog is open
-// leaves this function, never the screen text.
+// A permission dialog sits at the bottom of the screen: Codex asks `Allow command?`,
+// others show two of the markers (one alone is a menu or chat text). Only that a
+// dialog is open leaves this function, never the screen text; unreadable is no dialog.
 export function isPermissionPrompt(stdout: string): boolean {
-  const rows = (JSON.parse(stdout)?.result?.terminal?.tail ?? []) as string[]
-  const bottom = rows.slice(-20).join('\n').toLowerCase()
-  return PERMISSION.some(k => bottom.includes(k))
+  try {
+    const rows = JSON.parse(stdout)?.result?.terminal?.tail
+    if (!Array.isArray(rows)) return false
+    const bottom = rows.slice(-20).join('\n').toLowerCase()
+    return bottom.includes('allow command?') || PERMISSION.filter(k => bottom.includes(k)).length >= 2
+  } catch {
+    return false
+  }
 }
 
 type Terminal = { handle: string; lastOutputAt?: number; preview?: string; title?: string; worktreePath?: string; agentIdentity?: string }
