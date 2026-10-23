@@ -1,0 +1,5 @@
+{
+  "name": "chief-engineer",
+  "owner": { "name": "ogarciarevett" },
+  "plugins": [{ "name": "chief-engineer", "source": "./" }]
+}
