@@ -69,6 +69,6 @@ export type Snapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[] }
+    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[]; expanded: string[] }
   }
 }

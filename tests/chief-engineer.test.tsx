@@ -260,6 +260,14 @@ test('a section header collapses and opens its section; PR numbers link to GitHu
   expect(await ui.find({ type: 'Text', text: /^Coordinators$/ })).toBeDefined()
   await ui.press({ key: 'toggle-coordinators' })
   expect(await ui.find({ type: 'Text', text: /w-input/ })).toBeDefined()
+  // A cut-off row opens in full on a press and cuts again on the next.
+  const step = async () => (await ui.find({ type: 'Text', text: /Approve the release/ }))?.props.wrap
+  expect(await step()).toBe('truncate-end')
+  await ui.press({ key: 'expand-step-0' })
+  expect(await step()).toBe('wrap')
+  await ui.press({ key: 'expand-step-0' })
+  expect(await step()).toBe('truncate-end')
+  expect(await ui.find({ type: 'Button', key: 'expand-worker-term_w1' })).toBeDefined()
   await ui.unmount()
 })
 

@@ -33,6 +33,7 @@ const LOCAL_MS = 10_000
 const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-1' })
 const isPaneOpen = atom({ plugin: 'chief-engineer', key: 'isPaneOpen' } as const, false)
 const collapsed = atom({ plugin: 'chief-engineer', key: 'collapsed' } as const, [] as string[])
+const expanded = atom({ plugin: 'chief-engineer', key: 'expanded' } as const, [] as string[])
 
 type $ = EngineInterface
 type Key = keyof Snapshot
@@ -187,6 +188,16 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const s = await read($, snapshot)
     const shut = await read($, collapsed)
+    const full = await read($, expanded)
+    // A press shows a cut-off row in full, wrapped; another press cuts it again.
+    const fold = (id: string, children: RenderChildren, dim = false) => {
+      const isFull = full.includes(id)
+      return (
+        <Button key={`expand-${id}`} plain onPress={() => update($, expanded, list => (isFull ? list.filter(x => x !== id) : [...list, id]))}>
+          <Text wrap={isFull ? 'wrap' : 'truncate-end'} dimColor={dim}>{children}</Text>
+        </Button>
+      )
+    }
     const w = Math.max(24, e.props.bodyColumns)
     // Under 44 cells the secondary columns (handles, models, times, meters) drop out.
     const isWide = w >= 44
@@ -251,10 +262,7 @@ export const register: Register = (on, options) => {
         : wk.state === 'failed' ? ['✗', 'error', 'failed']
         : ['●', 'success', 'running']
       return row(
-        <Text wrap="truncate-end" dimColor={wk.state === 'done'}>
-          <Text color={color}>{icon} </Text>
-          {mask(wk.name)}
-        </Text>,
+        fold(`worker-${wk.handle ?? wk.name}`, [<Text color={color}>{icon} </Text>, mask(wk.name)], wk.state === 'done'),
         <Text>
           <Text color={color} weight={wk.state === 'input' || wk.state === 'permission' ? 'bold' : undefined} dimColor={wk.state === 'running'}>{label}</Text>
           {wk.pr ? <Text tabular> #{wk.pr}</Text> : ''}
@@ -326,7 +334,7 @@ export const register: Register = (on, options) => {
             return (
               <Box flexDirection="column">
                 {row(
-                  <Text wrap="truncate-end" dimColor={!r.prs.length}>{r.repo.split('/').pop() ?? r.repo}</Text>,
+                  fold(`repo-${r.repo}`, r.repo.split('/').pop() ?? r.repo, !r.prs.length),
                   <Text tabular>
                     {old ? <Text color="warning">◷ {old} old  </Text> : ''}
                     <Text weight="bold" dimColor={!r.prs.length}>{String(r.prs.length).padStart(2)}</Text>
@@ -374,13 +382,10 @@ export const register: Register = (on, options) => {
         {cfg.ownerSteps
           ? section('steps', '☐', 'Owner steps', s.steps, () =>
               s.steps?.value?.length
-                ? s.steps.value.map(t => {
+                ? s.steps.value.map((t, i) => {
                     const url = t.match(/https?:\/\/\S+/)?.[0]
                     return row(
-                      <Text wrap="truncate-end">
-                        <Text color="warning">☐ </Text>
-                        {mask(url ? t.replace(url, '').trim() : t)}
-                      </Text>,
+                      fold(`step-${i}`, [<Text color="warning">☐ </Text>, mask(url ? t.replace(url, '').trim() : t)]),
                       url ? <Link href={url}><Text color="suggestion">open ↗</Text></Link> : undefined,
                     )
                   })
