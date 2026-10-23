@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- The pane and its readers run only in the session named by the new `session` config key (Orca terminal handle or directory); every other session registers nothing and starts no process, and no key means no session. CPU comes from one `ps -A -o %cpu` sum over the cores, never `top`. Machine readings are shared through `~/Library/Caches/chief-engineer/machine.json` with a 15 s TTL.
+
 ## 0.2.2
 
 - Machine section: `load 11.2 / 18 cores` with `ok`, `busy` or `overloaded`; `CPU used 62%`; `memory used 54% (19.4 of 36 GB)` with the bar filling for used; `swap used 5.8 of 7.2 GB`. Pressing load or swap shows one line on what it means. Bars are coloured by `limits` (load 30, swap 8 GB, memory 60 %).

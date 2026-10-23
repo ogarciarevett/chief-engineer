@@ -46,7 +46,17 @@ export function parseConfig(text: string): Config {
   c.staleMinutes = Math.max(1, Number(c.staleMinutes) || DEFAULTS.staleMinutes)
   c.limits = { ...DEFAULTS.limits, ...(raw.limits as object) }
   if (!Object.values(c.limits).every(v => typeof v === 'number' && v > 0)) throw new Error('limits must be positive numbers')
+  if (c.session !== undefined && !(typeof c.session === 'object' && c.session !== null && Object.values(c.session).every(v => typeof v === 'string'))) {
+    throw new Error('session must be { orcaTerminalHandle?, cwd? }')
+  }
   return c
+}
+
+// The pane and its readers run in one session only: the one the config names by its
+// Orca terminal or its directory. No session key means no session.
+export function isChiefSession(c: Pick<Config, 'session'>, handle: string | undefined, cwd: string): boolean {
+  const s = c.session ?? {}
+  return (!!s.orcaTerminalHandle && s.orcaTerminalHandle === handle) || (!!s.cwd && s.cwd.replace(/\/$/, '') === cwd.replace(/\/$/, ''))
 }
 
 const minutesSince = (ms: number | undefined, now: number) => (ms ? Math.max(0, Math.floor((now - ms) / 60000)) : undefined)
@@ -174,20 +184,39 @@ export function parseUsage(stdout: string, providers: string[]): string[] {
   })
 }
 
+// `ps -A -o %cpu` prints a header and one percent per process; their sum over the cores is the Mac's CPU use.
+// ps follows the locale, so `0,4` is read as 0.4.
+export function parseCpu(ps: string, cores: number): number {
+  const pcts = ps.split('\n').map(l => l.trim().replace(',', '.')).filter(l => /^\d+(\.\d+)?$/.test(l)).map(Number)
+  if (!pcts.length || !cores) return NaN
+  return Math.round(Math.min(100, pcts.reduce((a, b) => a + b, 0) / cores))
+}
+
+export const MACHINE_TTL_MS = 15_000
+const MACHINE_KEYS = ['load', 'cores', 'cpuPercent', 'memoryPercent', 'memoryGB', 'swapUsedGB', 'swapTotalGB'] as const
+const isMachine = (v: unknown): v is Machine => typeof v === 'object' && v !== null && MACHINE_KEYS.every(k => Number.isFinite((v as Machine)[k]))
+// The shared cache `{ at, value }`: its value while it is younger than the TTL, else undefined.
+export function cachedMachine(text: string, now: number): Machine | undefined {
+  try {
+    const c = JSON.parse(text)
+    return typeof c?.at === 'number' && now - c.at >= 0 && now - c.at < MACHINE_TTL_MS && isMachine(c.value) ? c.value : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // `sysctl -n vm.loadavg vm.swapusage hw.ncpu hw.memsize` prints one line per name, in that order.
-export function parseMachine(sysctl: string, pressure: string, top: string): Machine {
+export function parseMachine(sysctl: string, pressure: string, ps: string): Machine {
   const [loadavg = '', swap = '', ncpu = '', memsize = ''] = sysctl.split('\n')
   const gb = (key: string) => {
     const m = swap.match(new RegExp(`${key} = ([\\d.]+)([MG])`))
     return m ? Number(m[1]) / (m[2] === 'M' ? 1024 : 1) : NaN
   }
   const free = Number(pressure.match(/free percentage:\s*(\d+)/i)?.[1])
-  // top's first sample counts since boot; the last one is the live second.
-  const idle = Number([...top.matchAll(/([\d.]+)% idle/g)].pop()?.[1])
   const m: Machine = {
     load: Number(loadavg.match(/[\d.]+/)?.[0]),
     cores: Number(ncpu),
-    cpuPercent: Math.round(100 - idle),
+    cpuPercent: parseCpu(ps, Number(ncpu)),
     memoryPercent: 100 - free,
     memoryGB: Number(memsize) / 2 ** 30,
     swapUsedGB: gb('used'),

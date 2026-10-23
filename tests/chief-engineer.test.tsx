@@ -1,7 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
+  cachedMachine,
   carryDone,
+  isChiefSession,
+  MACHINE_TTL_MS,
   isPermissionPrompt,
   mask,
   mergeWorkers,
@@ -9,6 +12,7 @@ import {
   loadState,
   machineLevel,
   parseConfig,
+  parseCpu,
   parseEnvStatus,
   parseMachine,
   parseMail,
@@ -29,6 +33,7 @@ const CONFIG = {
   usageProviders: ['claude'],
   mailbox: '/tmp/inbox.jsonl',
   ownerSteps: '/tmp/steps.md',
+  session: { cwd: '/' },
 }
 const terminalsAt = (now: number) => JSON.stringify({
   result: {
@@ -160,22 +165,51 @@ test('usage: keeps the named providers only', () => {
 })
 
 const SYSCTL = '{ 11.20 10.73 9.45 }\ntotal = 7168.00M  used = 5939.20M  free = 1228.80M  (encrypted)\n18\n38654705664\n'
-const TOP = 'CPU usage: 48.63% user, 27.1% sys, 24.34% idle \nCPU usage: 29.82% user, 8.18% sys, 62.00% idle \n'
+// 684 % over 18 cores is 38 %.
+const PS = ' %CPU\n600.0\n 80.5\n  3.5\n  0.0\n'
 const LIMITS = { load: 30, swapGB: 8, memoryPercent: 60 }
 
 test('machine: load with cores, CPU, used memory and swap', () => {
-  const m = parseMachine(SYSCTL, 'System-wide memory free percentage: 46%', TOP)
+  const m = parseMachine(SYSCTL, 'System-wide memory free percentage: 46%', PS)
   expect(m).toEqual({ load: 11.2, cores: 18, cpuPercent: 38, memoryPercent: 54, memoryGB: 36, swapUsedGB: 5.8, swapTotalGB: 7 })
-  expect(parseMachine(SYSCTL.replace('7168.00M', '2.50G'), 'free percentage: 46%', TOP).swapTotalGB).toBe(2.5)
+  expect(parseMachine(SYSCTL.replace('7168.00M', '2.50G'), 'free percentage: 46%', PS).swapTotalGB).toBe(2.5)
   expect(machineLevel(m, LIMITS)).toBe('warning')
   expect(machineLevel({ ...m, memoryPercent: 40 }, LIMITS)).toBe('success')
-  for (const bad of [['', '', ''], [SYSCTL, '', TOP], [SYSCTL, 'free percentage: 46%', ''], ['{ 1.0 }\n\n\n', 'free percentage: 46%', TOP]]) {
+  for (const bad of [['', '', ''], [SYSCTL, '', PS], [SYSCTL, 'free percentage: 46%', ' %CPU\n'], ['{ 1.0 }\n\n\n', 'free percentage: 46%', PS]]) {
     expect(() => parseMachine(bad[0]!, bad[1]!, bad[2]!)).toThrow()
   }
 })
 
+test('CPU: the ps percents summed over the cores, capped at 100', () => {
+  expect(parseCpu(PS, 18)).toBe(38)
+  expect(parseCpu(' %CPU\n1800.0\n90.0\n', 18)).toBe(100)
+  expect(parseCpu(' %CPU\n', 18)).toBeNaN()
+  expect(parseCpu('garbage', 18)).toBeNaN()
+  // A comma-decimal locale.
+  expect(parseCpu(' %CPU\n600,0\n 80,5\n  3,5\n', 18)).toBe(38)
+})
+
+test('machine cache: fresh within the TTL, stale or unreadable is a miss', () => {
+  const m = parseMachine(SYSCTL, 'free percentage: 46%', PS)
+  const text = JSON.stringify({ at: NOW, value: m })
+  expect(cachedMachine(text, NOW + MACHINE_TTL_MS - 1)).toEqual(m)
+  expect(cachedMachine(text, NOW + MACHINE_TTL_MS)).toBe(undefined)
+  expect(cachedMachine(text, NOW - 1)).toBe(undefined)
+  for (const bad of ['', 'not json', '{}', JSON.stringify({ at: NOW }), JSON.stringify({ at: NOW, value: { load: 1 } })]) expect(cachedMachine(bad, NOW)).toBe(undefined)
+})
+
+test('session: only the one the config names, by terminal or directory; none without a key', () => {
+  expect(isChiefSession({ session: { orcaTerminalHandle: 'term_chief' } }, 'term_chief', '/x')).toBe(true)
+  expect(isChiefSession({ session: { orcaTerminalHandle: 'term_chief' } }, 'term_other', '/x')).toBe(false)
+  expect(isChiefSession({ session: { cwd: '/w/chief/' } }, undefined, '/w/chief')).toBe(true)
+  expect(isChiefSession({ session: { cwd: '/w/chief' } }, undefined, '/w/chief-2')).toBe(false)
+  expect(isChiefSession({}, 'term_chief', '/w/chief')).toBe(false)
+  expect(isChiefSession({ session: { cwd: '' } }, undefined, '')).toBe(false)
+  expect(() => parseConfig('{"session":{"cwd":1}}')).toThrow(/session/)
+})
+
 test('machine: load state by core count and limit; bars by their limits', () => {
-  const m = parseMachine(SYSCTL, 'free percentage: 46%', TOP)
+  const m = parseMachine(SYSCTL, 'free percentage: 46%', PS)
   expect(loadState(m, 30)).toEqual(['success', 'ok'])
   expect(loadState({ ...m, load: 18 }, 30)).toEqual(['warning', 'busy'])
   expect(loadState({ ...m, load: 30 }, 30)).toEqual(['warning', 'busy'])
@@ -210,12 +244,22 @@ test('mailbox: last 5, newest first, names mapped, body never kept', () => {
 // Stands for the engine beneath the mod: every read answers from fixtures.
 function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object } = {}) {
   const runs: string[][] = []
-  mock.clock(on)
+  const calls: string[] = []
+  // The shared machine cache: missing until the plugin writes it.
+  let cache = ''
+  const clock = mock.clock(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'chief' } }))
-  on('ui.open', () => ({ value: { isPlaced: opts.isPlaced ?? true } }))
-  on('env.get', () => ({ value: '/home/me' }))
-  on('fs.read', (_$: any, e: any) => ({ value: e.path.endsWith('.md') ? '- Approve the release https://x.test/3\n' : JSON.stringify(opts.config ?? CONFIG) }))
+  on('command.register', () => (calls.push('command'), { value: { command: 'chief' } }))
+  on('ui.open', () => (calls.push('open'), { value: { isPlaced: opts.isPlaced ?? true } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
+  on('fs.write', (_$: any, e: any) => ((cache = e.text), { value: undefined }))
+  on('fs.read', (_$: any, e: any) => {
+    if (e.path.endsWith('/machine.json')) {
+      if (!cache) throw new Error('ENOENT')
+      return { value: cache }
+    }
+    return { value: e.path.endsWith('.md') ? '- Approve the release https://x.test/3\n' : JSON.stringify(opts.config ?? CONFIG) }
+  })
   on('http.fetch', (_$: any, e: any) => {
     if (opts.failEnv) throw new Error('offline')
     const body = opts.htmlStatus ? '<html>502 Bad Gateway</html>' : '{"state":"normal"}'
@@ -236,8 +280,8 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
           ? JSON.stringify([{ number: 42, createdAt: '2020-01-01T00:00:00Z' }])
           : a.includes('sysctl')
             ? SYSCTL
-            : a.startsWith('/usr/bin/top')
-            ? TOP
+            : a.startsWith('/bin/ps')
+            ? PS
             : a.includes('memory_pressure')
               ? 'System-wide memory free percentage: 48%'
               : a.includes('tail')
@@ -245,7 +289,7 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
                 : 'claude: session 4%; weekly 29%\ncodex: weekly 22%'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return runs
+  return Object.assign(runs, { clock, calls, cache: () => cache })
 }
 
 const PANE = {
@@ -269,7 +313,7 @@ test('the pane shows all seven panels from the config, on every surface', async 
     await ui.unmount()
   }
   // Read-only commands only.
-  for (const argv of runs) expect(['orca', 'gh', '/usr/sbin/sysctl', '/usr/bin/memory_pressure', '/usr/bin/top', '/usr/bin/tail', '/bin/usage']).toContain(argv[0])
+  for (const argv of runs) expect(['orca', 'gh', '/usr/sbin/sysctl', '/usr/bin/memory_pressure', '/bin/ps', '/usr/bin/tail', '/bin/usage']).toContain(argv[0])
   expect(runs.some(a => a.includes('--run') && a.includes('run_a'))).toBe(true)
   expect(runs.filter(a => a.includes('--screen')).map(a => a[4]).sort()).toEqual(['term_alpha', 'term_t1', 'term_w1', 'term_w2', 'term_w3'])
 })
@@ -362,4 +406,25 @@ test('the band sums it up while the pane is closed', async ($, on) => {
   const text = (await band.find({ type: 'Text', text: /◆ chief/ }))?.text ?? ''
   expect(text).toMatch(/● 4 workers  ■ 2 permission  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs  ▣ load 11\/18 mem 52% swap 5\.8G/)
   await band.unmount()
+})
+
+for (const [why, session] of [['another session', { cwd: '/somewhere/else', orcaTerminalHandle: 'term_chief' }], ['no session key', undefined]] as const) {
+  test(`${why}: registers nothing and spawns no process`, async ($, on) => {
+    const runs = engine(on, { config: { ...CONFIG, session } })
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await runs.clock.advance(60_000)
+    expect([...runs]).toEqual([])
+    expect(runs.calls).toEqual([])
+  })
+}
+
+test('the machine is read once per TTL through the shared cache', async ($, on) => {
+  const runs = engine(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(runs.calls).toEqual(['command', 'open'])
+  // The second local tick, 10 s on, finds the cache fresh (the TTL itself is tested above).
+  await runs.clock.advance(10_000)
+  expect(runs.filter(a => a[0] === '/bin/ps').length).toBe(1)
+  expect(JSON.parse(runs.cache()).value.cpuPercent).toBe(38)
+  expect(runs.some(a => a[0] === '/usr/bin/top')).toBe(false)
 })
