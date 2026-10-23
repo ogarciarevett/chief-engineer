@@ -25,7 +25,7 @@ day, live, and a one-line band above the prompt while the pane is closed.
 Every section header shows the age of its last good read. A read that fails keeps
 the last value and adds a yellow `stale:` note; it never closes the pane.
 
-Screenshot: pending (added in the next change).
+![The pane with placeholder data](docs/screenshot.png)
 
 ## Install
 
@@ -63,7 +63,7 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
 | `pollSeconds` | `60` | Interval for remote reads (workers, environments, PRs, usage). Never under 30. Local reads (machine, owner steps, mailbox, config) run every 10 s. |
 | `staleMinutes` | `30` | A dispatched worker whose terminal is quiet longer than this is stale. |
 | `coordinators` | `[]` | `{ name, terminal?, run?, model? }`. `terminal` is the Orca terminal handle; `run` is the orchestration Run that holds its tasks. |
-| `workersCommand` | `orca orchestration task-list --run {run} --json` | Argv that lists a coordinator's tasks; `{run}` is replaced. |
+| `workersCommand` | `orca orchestration task-list --run {run} --status dispatched --brief --json` | Argv that lists a coordinator's live tasks; `{run}` is replaced. A worker that leaves this list shows as done for an hour. Output over 4 MiB is refused, so keep the filter. |
 | `terminalsCommand` | `orca terminal list --json` | Argv that lists terminals with `lastOutputAt`. The output preview is used only to detect a waiting prompt and is never shown or stored. |
 | `environments` | `[]` | `{ name, url }`, http or https. |
 | `readyPath` | `/ready` | Path whose HTTP code is shown. |
@@ -85,13 +85,15 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
 
 ## Status
 
-Implemented and covered by `claude plugin test` (11 tests):
+Implemented and covered by `claude plugin test` (13 tests):
 
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, environments, PRs, usage, machine, owner steps, mailbox).
 - The pane draws all seven sections from a config on the terminal and desktop
   surfaces; only the allowed read-only commands run.
 - An environment that does not answer shows as down instead of failing.
+- A section whose first read fails shows the error; a worker that leaves the
+  dispatched list shows as done for an hour.
 - The band summary while the pane is closed.
 
 Pending:
@@ -99,6 +101,7 @@ Pending:
 - Coordinator context percent: not shown; no cheap read-only source yet.
 - Machine readings use macOS tools (`sysctl vm.loadavg`, `memory_pressure`); Linux
   is not supported yet.
+- Done is not split from failed for workers that leave the dispatched list.
 - Sections cut long lines to the pane width; there is no scrolling inside the pane.
 
 ## Credits

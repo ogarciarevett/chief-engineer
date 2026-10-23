@@ -29,6 +29,8 @@ export type WorkerRow = {
   state: WorkerState
   quietMinutes?: number
   pr?: string
+  // When a dispatched worker left the list; it shows as done for an hour.
+  doneAt?: number
 }
 
 export type CoordinatorRow = {
@@ -45,7 +47,8 @@ export type Machine = { load: number; freePercent: number }
 export type MailRow = { at: string; from: string; subject: string }
 
 // One section's last good value, when it was read, and the last error since.
-export type Section<T> = { value: T; at: number; error?: string }
+// `value` is absent (and `at` 0) when the first read already failed.
+export type Section<T> = { value?: T; at: number; error?: string }
 
 export type Snapshot = {
   config?: Section<Config>

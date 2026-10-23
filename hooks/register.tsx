@@ -6,6 +6,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Config, Section, Snapshot } from '../types'
 import {
+  carryDone,
   coordinatorRow,
   envRow,
   machineLevel,
@@ -36,13 +37,15 @@ async function refresh<K extends Key>($: $, key: K, read: () => Promise<NonNulla
     await update($, snapshot, s => ({ ...s, [key]: { value, at: Date.now() } }))
   } catch (err) {
     const error = err instanceof Error ? err.message.slice(0, 120) : 'read failed'
-    await update($, snapshot, s => (s[key] ? { ...s, [key]: { ...s[key], error } } : s))
+    await update($, snapshot, s => ({ ...s, [key]: { ...(s[key] ?? { at: 0 }), error } }))
   }
 }
 
 async function run($: $, argv: string[], timeoutMs = 20_000) {
   const r = await $.process.run(argv, { timeoutMs })
-  if (r.exitCode !== 0) throw new Error(`${(argv[0] ?? "").split('/').pop()} exited ${r.exitCode}`)
+  const name = (argv[0] ?? '').split('/').pop()
+  if (r.exitCode !== 0) throw new Error(`${name} exited ${r.exitCode}`)
+  if (r.isStdoutTruncated) throw new Error(`${name} output is over 4 MiB`)
   return r.stdout
 }
 
@@ -56,9 +59,11 @@ async function readRemote($: $, c: Config) {
   await Promise.all([
     refresh($, 'coordinators', async () => {
       const terminals = parseTerminals(await run($, c.terminalsCommand))
+      const prev = (await read($, snapshot)).coordinators?.value ?? []
       return Promise.all(
         c.coordinators.map(async co => {
-          const workers = co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : []
+          const live = co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : []
+          const workers = carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now())
           return coordinatorRow(co, workers, terminals, now())
         }),
       )
@@ -121,7 +126,8 @@ async function tick($: $) {
 }
 
 async function open($: $) {
-  const r = await $.ui.open({ id: PANE, title: TITLE })
+  // Inline, ask for room for all seven sections; a dock ignores it.
+  const r = await $.ui.open({ id: PANE, title: TITLE, rows: 48 })
   await update($, isPaneOpen, () => r.isPlaced)
 }
 
@@ -154,14 +160,13 @@ export const register: Register = (on, options) => {
     const head = (title: string, sec?: Section<unknown>) => (
       <Text bold>
         {title}{' '}
-        <Text dimColor>{sec ? ago(sec.at) : 'waiting'}</Text>
+        <Text dimColor>{!sec ? 'waiting' : sec.at ? ago(sec.at) : 'never read'}</Text>
         {sec?.error ? <Text color="warning"> stale: {cut(sec.error, 40)}</Text> : ''}
       </Text>
     )
     const line = (t: string, color?: string, key?: string) => <Text color={color} key={key}>{cut(t, w)}</Text>
 
-    if (!s.config) return <Box flexDirection="column">{line(`No config read yet from ${configPath}`, 'warning')}</Box>
-    if (s.config.error && !s.config.value.coordinators.length) return <Box flexDirection="column">{line(`Config: ${s.config.error}`, 'error')}</Box>
+    if (!s.config?.value) return <Box flexDirection="column">{line(s.config?.error ? `Config ${configPath}: ${s.config.error}` : `No config read yet from ${configPath}`, s.config?.error ? 'error' : 'warning')}</Box>
 
     const m = s.machine?.value
     return (
@@ -191,7 +196,7 @@ export const register: Register = (on, options) => {
         {head('Machine', s.machine)}
         {m ? line(`load ${m.load.toFixed(1)}  free ${m.freePercent}%`, machineLevel(m)) : line('no reading yet', 'subtle')}
         {head('Owner steps', s.steps)}
-        {(s.steps?.value ?? []).length ? s.steps!.value.map(t => line(`• ${t}`)) : line('none open', 'subtle')}
+        {s.steps?.value?.length ? s.steps.value.map(t => line(`• ${t}`)) : line('none open', 'subtle')}
         {head('Mailbox', s.mail)}
         {(s.mail?.value ?? []).map(r => line(`${r.at}  ${r.from}  ${r.subject}`))}
       </Box>
@@ -201,7 +206,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || (await read($, isPaneOpen))) return next(e)
     const s = await read($, snapshot)
-    if (!s.config) return next(e)
+    if (!s.config?.value) return next(e)
     const { Text } = $.ui.resolve(e)
     const workers = (s.coordinators?.value ?? []).flatMap(c => c.workers)
     const attn = workers.filter(x => x.state === 'input' || x.state === 'stale').length
@@ -214,7 +219,7 @@ export const register: Register = (on, options) => {
       `envs ${envs.filter(x => x.ready === '200').length}/${envs.length} ready`,
       `${prs} PRs`,
       m ? `load ${m.load.toFixed(0)} free ${m.freePercent}%` : '',
-      `${s.steps?.value.length ?? 0} owner steps`,
+      `${s.steps?.value?.length ?? 0} owner steps`,
       '/chief',
     ].filter(Boolean).join(' · ')
     return <Text color={attn ? 'warning' : 'subtle'}>{cut(text, Math.max(20, e.props.bodyColumns))}</Text>

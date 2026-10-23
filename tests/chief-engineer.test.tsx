@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
+  carryDone,
   machineLevel,
   parseConfig,
   parseEnvStatus,
@@ -69,6 +70,14 @@ test('workers: input, stale, running, recent done; old and queued drop off; PR n
   expect(JSON.stringify(rows).includes('hunter2')).toBe(false)
 })
 
+test('workers: one that leaves the dispatched list shows as done for an hour, then drops', () => {
+  const prev = [{ name: 'w-a', state: 'running' as const, pr: '5' }, { name: 'w-b', state: 'stale' as const }]
+  const now1 = carryDone(prev, [{ name: 'w-b', state: 'running' }], NOW)
+  expect(now1).toEqual([{ name: 'w-b', state: 'running' }, { name: 'w-a', state: 'done', pr: '5', doneAt: NOW }])
+  expect(carryDone(now1, [], NOW + 30 * 60_000).map(w => w.name)).toEqual(['w-b', 'w-a'])
+  expect(carryDone(now1.slice(1), [], NOW + 61 * 60_000)).toEqual([])
+})
+
 test('environments: status field read, anything else is ?', () => {
   expect(parseEnvStatus('{"state":"normal"}', 'state')).toBe('normal')
   expect(parseEnvStatus('{"state":3}', 'state')).toBe('?')
@@ -108,7 +117,7 @@ test('mailbox: last 5, newest first, names mapped, body never kept', () => {
 })
 
 // Stands for the engine beneath the mod: every read answers from fixtures.
-function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean } = {}) {
+function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean } = {}) {
   const runs: string[][] = []
   mock.clock(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
@@ -123,6 +132,7 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean } = {}) {
   on('process.run', (_$: any, e: any) => {
     runs.push(e.argv)
     const a = e.argv.join(' ')
+    if (opts.failOrca && a.startsWith('orca')) return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     const stdout = a.includes('terminal list')
       ? terminalsAt(Date.now())
       : a.includes('task-list')
@@ -170,6 +180,16 @@ test('an environment that does not answer reads as down, never a crash', async (
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /Dev  ready down/ }))?.text).toMatch(/down/)
+  await ui.unmount()
+})
+
+test('a section whose first read fails says so instead of waiting', async ($, on) => {
+  engine(on, { failOrca: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Coordinators/ }))?.text).toMatch(/never read stale: orca exited 1/)
+  // The other sections still draw.
+  expect((await ui.find({ type: 'Text', text: /Dev  ready 200/ }))?.text).toMatch(/normal/)
   await ui.unmount()
 })
 

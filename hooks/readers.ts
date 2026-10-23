@@ -6,7 +6,7 @@ const DEFAULTS: Config = {
   pollSeconds: 60,
   staleMinutes: 30,
   coordinators: [],
-  workersCommand: ['orca', 'orchestration', 'task-list', '--run', '{run}', '--json'],
+  workersCommand: ['orca', 'orchestration', 'task-list', '--run', '{run}', '--status', 'dispatched', '--brief', '--json'],
   terminalsCommand: ['orca', 'terminal', 'list', '--json'],
   environments: [],
   readyPath: '/ready',
@@ -82,6 +82,15 @@ export function parseWorkers(stdout: string, terminals: ReturnType<typeof parseT
   }
   const order = { input: 0, stale: 1, running: 2, failed: 3, done: 4 }
   return rows.sort((a, b) => order[a.state] - order[b.state])
+}
+
+// A worker that was live last read and is gone now has settled: keep it as done for an hour.
+export function carryDone(prev: WorkerRow[], next: WorkerRow[], now: number): WorkerRow[] {
+  const names = new Set(next.map(w => w.name))
+  const settled = prev
+    .filter(w => !names.has(w.name) && (w.doneAt === undefined ? w.state !== 'done' && w.state !== 'failed' : now - w.doneAt < 3600_000))
+    .map(w => ({ name: w.name, state: 'done' as const, pr: w.pr, doneAt: w.doneAt ?? now }))
+  return [...next, ...settled]
 }
 
 export function coordinatorRow(c: Config['coordinators'][number], workers: WorkerRow[], terminals: ReturnType<typeof parseTerminals>, now: number): CoordinatorRow {
