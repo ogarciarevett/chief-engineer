@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Machine section: `load 11.2 / 18 cores` with `ok`, `busy` or `overloaded`; `CPU used 62%`; `memory used 54% (19.4 of 36 GB)` with the bar filling for used; `swap used 5.8 of 7.2 GB`. Pressing load or swap shows one line on what it means. Bars are coloured by `limits` (load 30, swap 8 GB, memory 60 %).
+
 ## 0.2.1
 
 - A worker name shows once with its newest state; done workers fold into one `+N done` line.

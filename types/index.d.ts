@@ -23,7 +23,11 @@ export type Config = {
   usageProviders: string[]
   mailbox: string
   ownerSteps: string
+  limits: Limits
 }
+
+// A bar turns red over its limit; load over `load` reads overloaded.
+export type Limits = { load: number; swapGB: number; memoryPercent: number }
 
 export type WorkerState = 'permission' | 'running' | 'input' | 'stale' | 'done' | 'failed'
 
@@ -49,7 +53,7 @@ export type CoordinatorRow = {
 
 export type EnvRow = { name: string; ready: string; state: string; checkedAt: number }
 export type RepoRow = { repo: string; prs: { number: number; isOld: boolean }[] }
-export type Machine = { load: number; freePercent: number }
+export type Machine = { load: number; cores: number; cpuPercent: number; memoryPercent: number; memoryGB: number; swapUsedGB: number; swapTotalGB: number }
 export type MailRow = { at: string; from: string; subject: string }
 
 // One section's last good value, when it was read, and the last error since.
