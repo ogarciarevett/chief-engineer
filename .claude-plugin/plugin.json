@@ -1,6 +1,6 @@
 {
   "name": "chief-engineer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A live pane for a chief coordinator: coordinators and their workers, environments, open PRs, provider usage, machine load, owner steps and the mailbox.",
   "author": { "name": "ogarciarevett", "url": "https://github.com/ogarciarevett" },
   "repository": "https://github.com/ogarciarevett/chief-engineer",
