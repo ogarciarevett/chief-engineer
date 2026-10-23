@@ -31,6 +31,7 @@ CLAUDE_CODE_NO_FLICKER=1 claude
 
 The panel docks on the right of the chat. In a normal (not fullscreen) session it
 opens inline above the prompt; `/chief` opens it at any time.
+While the pane is closed, a one-line band above the prompt sums up what needs you.
 
 ## Why it is different
 
@@ -38,7 +39,8 @@ opens inline above the prompt; `/chief` opens it at any time.
   your open steps and the mailbox stay beside the chat you are already in.
 - **It finds stuck agents.** A coordinator or worker that sits on a permission
   dialog turns red and moves to the top.
-- **Read-only.** It runs only list and read commands and HTTP GETs. No hosted
+- **Read-only.** It runs only list and read commands, your own usage command,
+  and HTTP GETs. No hosted
   service, no paid API calls, no API key.
 - **It never shows secrets.** No message bodies, terminal output or environment
   variables; phone-like numbers are masked.
