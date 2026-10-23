@@ -43,7 +43,10 @@ claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer
 
 Answer `y` to add the marketplace, then pick a scope.
 
-Then point the mod at your config file. Copy `config.example.json` somewhere
+To set the config path in the same step, add
+`--config configPath=/absolute/path/config.json` to the shell line.
+
+Otherwise point the mod at your config file. Copy `config.example.json` somewhere
 outside any repo, edit it, and set the path in `/config` (field `Config file` of
 `chief-engineer`) or in `~/.claude/settings.json`:
 

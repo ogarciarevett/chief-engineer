@@ -168,7 +168,7 @@ export const register: Register = (on, options) => {
         {sec?.error ? <Text color="warning"> stale: {cut(sec.error, 40)}</Text> : ''}
       </Text>
     )
-    const line = (t: string, color?: string, key?: string) => <Text color={color} key={key}>{cut(t, w)}</Text>
+    const line = (t: string, color?: string) => <Text color={color}>{cut(mask(t), w)}</Text>
 
     if (!s.config?.value) return <Box flexDirection="column">{line(s.config?.error ? `Config ${configPath}: ${s.config.error}` : `No config read yet from ${configPath}`, s.config?.error ? 'error' : 'warning')}</Box>
 
