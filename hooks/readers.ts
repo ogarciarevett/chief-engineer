@@ -106,11 +106,13 @@ export function parseTerminalWorkers(stdout: string, worktrees: string[], skip: 
 }
 
 // A worker that was live last read and is gone now has settled: keep it as done for an hour.
+// Matched by terminal when known: agents retitle their terminals as work moves on.
 export function carryDone(prev: WorkerRow[], next: WorkerRow[], now: number): WorkerRow[] {
-  const names = new Set(next.map(w => w.name))
+  const key = (w: WorkerRow) => w.handle ?? w.name
+  const live = new Set(next.map(key))
   const settled = prev
-    .filter(w => !names.has(w.name) && (w.doneAt === undefined ? w.state !== 'done' && w.state !== 'failed' : now - w.doneAt < 3600_000))
-    .map(w => ({ name: w.name, state: 'done' as const, pr: w.pr, doneAt: w.doneAt ?? now }))
+    .filter(w => !live.has(key(w)) && (w.doneAt === undefined ? w.state !== 'done' && w.state !== 'failed' : now - w.doneAt < 3600_000))
+    .map(w => ({ name: w.name, state: 'done' as const, pr: w.pr, doneAt: w.doneAt ?? now, ...(w.handle ? { handle: w.handle } : {}) }))
   return [...next, ...settled]
 }
 

@@ -102,7 +102,7 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
 
 ## Status
 
-Implemented and covered by `claude plugin test` (18 tests):
+Implemented and covered by `claude plugin test` (19 tests):
 
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, terminal workers, environments, PRs, usage, machine, owner steps, mailbox).

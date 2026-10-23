@@ -101,6 +101,17 @@ test('workers: one that leaves the dispatched list shows as done for an hour, th
   expect(carryDone(now1.slice(1), [], NOW + 61 * 60_000)).toEqual([])
 })
 
+test('workers: a retitled terminal is the same worker, and one terminal is never under two coordinators', () => {
+  const prev = [{ name: 'Old title', state: 'running' as const, handle: 'term_x' }]
+  expect(carryDone(prev, [{ name: 'New title', state: 'running', handle: 'term_x' }], NOW).map(w => w.name)).toEqual(['New title'])
+  expect(carryDone(prev, [], NOW)).toEqual([{ name: 'Old title', state: 'done', doneAt: NOW, handle: 'term_x' }])
+  const out = JSON.stringify({ result: { terminals: [{ handle: 'term_x', title: 'T', worktreePath: '/x/app-other', agentIdentity: 'claude', lastOutputAt: NOW }] } })
+  const seen = new Set<string>()
+  const a = parseTerminalWorkers(out, ['/x/app'], seen, NOW, 30)
+  for (const w of a) seen.add(w.handle!)
+  expect([a.length, parseTerminalWorkers(out, ['/x/app-other'], seen, NOW, 30).length]).toEqual([1, 0])
+})
+
 test('environments: status field read, anything else is ?', () => {
   expect(parseEnvStatus('{"state":"normal"}', 'state')).toBe('normal')
   expect(parseEnvStatus('{"state":3}', 'state')).toBe('?')

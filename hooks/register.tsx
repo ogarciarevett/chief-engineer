@@ -67,17 +67,20 @@ async function readRemote($: $, c: Config) {
       const terminalsOut = await run($, c.terminalsCommand)
       const terminals = parseTerminals(terminalsOut)
       const prev = (await read($, snapshot)).coordinators?.value ?? []
-      const own = new Set(c.coordinators.flatMap(x => (x.terminal ? [x.terminal] : [])))
-      return Promise.all(
-        c.coordinators.map(async co => {
-          const dispatched = co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : []
-          const skip = new Set([...own, ...dispatched.flatMap(w => (w.handle ? [w.handle] : []))])
-          const order = { input: 0, stale: 1, running: 2, failed: 3, done: 4 }
-          const live = [...dispatched, ...parseTerminalWorkers(terminalsOut, co.worktrees ?? [], skip, now(), c.staleMinutes)].sort((a, b) => order[a.state] - order[b.state])
-          const workers = carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now())
-          return coordinatorRow(co, workers, terminals, now())
-        }),
+      // One shared set, filled in config order, so each terminal is listed under one coordinator only.
+      const seen = new Set(c.coordinators.flatMap(x => (x.terminal ? [x.terminal] : [])))
+      const dispatched = await Promise.all(
+        c.coordinators.map(async co => (co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : [])),
       )
+      for (const w of dispatched.flat()) if (w.handle) seen.add(w.handle)
+      const order = { input: 0, stale: 1, running: 2, failed: 3, done: 4 }
+      return c.coordinators.map((co, i) => {
+        const mine = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes)
+        for (const w of mine) seen.add(w.handle!)
+        const live = [...dispatched[i]!, ...mine].sort((a, b) => order[a.state] - order[b.state])
+        const workers = carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now())
+        return coordinatorRow(co, workers, terminals, now())
+      })
     }),
     refresh($, 'environments', () =>
       Promise.all(
@@ -245,7 +248,8 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" rowGap="md">
         {row(
           <Text wrap="truncate-end">
-            {needYou ? <Text color="error" weight="bold">◐ {needYou} need you  </Text> : <Text color="success">● all clear  </Text>}
+            {needYou ? <Text color="error" weight="bold">◐ {needYou} need you  </Text> : ''}
+            {needYou || stale || down ? '' : <Text color="success">● all clear</Text>}
             {stale ? <Text color="warning">◌ {stale} stale  </Text> : ''}
             {down ? <Text color="error">▼ {down} env down</Text> : ''}
           </Text>,
