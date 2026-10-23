@@ -8,7 +8,10 @@ import type { Config, Section, Snapshot, WorkerRow } from '../types'
 import {
   carryDone,
   expandHome,
+  isPermissionPrompt,
   mask,
+  mergeWorkers,
+  ORDER,
   coordinatorRow,
   envRow,
   machineLevel,
@@ -73,13 +76,27 @@ async function readRemote($: $, c: Config) {
         c.coordinators.map(async co => (co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : [])),
       )
       for (const w of dispatched.flat()) if (w.handle) seen.add(w.handle)
-      const order = { input: 0, stale: 1, running: 2, failed: 3, done: 4 }
+      const mine = c.coordinators.map(co => {
+        const rows = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes)
+        for (const w of rows) seen.add(w.handle!)
+        return rows
+      })
+      // One screen read per shown terminal; a read that fails counts as no dialog.
+      const blocked = new Set<string>()
+      await Promise.all(
+        [...seen].map(h =>
+          run($, c.screenCommand.map(a => a.replace('{handle}', h))).then(
+            out => void (isPermissionPrompt(out) && blocked.add(h)),
+            () => {},
+          ),
+        ),
+      )
       return c.coordinators.map((co, i) => {
-        const mine = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes)
-        for (const w of mine) seen.add(w.handle!)
-        const live = [...dispatched[i]!, ...mine].sort((a, b) => order[a.state] - order[b.state])
-        const workers = carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now())
-        return coordinatorRow(co, workers, terminals, now())
+        const live = [...dispatched[i]!, ...mine[i]!]
+          .map(w => (w.handle && blocked.has(w.handle) ? { ...w, state: 'permission' as const } : w))
+          .sort((a, b) => ORDER[a.state] - ORDER[b.state])
+        const workers = mergeWorkers(carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now()))
+        return coordinatorRow(co, workers, terminals, now(), !!co.terminal && blocked.has(co.terminal))
       })
     }),
     refresh($, 'environments', () =>
@@ -219,6 +236,7 @@ export const register: Register = (on, options) => {
     const coords = s.coordinators?.value ?? []
     const workers = coords.flatMap(c => c.workers)
     const needYou = workers.filter(x => x.state === 'input').length
+    const permission = workers.filter(x => x.state === 'permission').length + coords.filter(c => c.isWaitingPermission).length
     const stale = workers.filter(x => x.state === 'stale').length
     const envs = s.environments?.value ?? []
     const down = envs.filter(x => x.ready !== '200').length
@@ -226,7 +244,8 @@ export const register: Register = (on, options) => {
 
     const worker = (wk: WorkerRow) => {
       const [icon, color, label] =
-        wk.state === 'input' ? ['◐', 'error', 'needs you']
+        wk.state === 'permission' ? ['■', 'error', 'waiting for permission']
+        : wk.state === 'input' ? ['◐', 'error', 'needs you']
         : wk.state === 'stale' ? ['◌', 'warning', `stale ${wk.quietMinutes ?? '?'}m`]
         : wk.state === 'done' ? ['✓', 'subtle', 'done']
         : wk.state === 'failed' ? ['✗', 'error', 'failed']
@@ -237,7 +256,7 @@ export const register: Register = (on, options) => {
           {mask(wk.name)}
         </Text>,
         <Text>
-          <Text color={color} weight={wk.state === 'input' ? 'bold' : undefined} dimColor={wk.state === 'running'}>{label}</Text>
+          <Text color={color} weight={wk.state === 'input' || wk.state === 'permission' ? 'bold' : undefined} dimColor={wk.state === 'running'}>{label}</Text>
           {wk.pr ? <Text tabular> #{wk.pr}</Text> : ''}
         </Text>,
         2,
@@ -248,26 +267,38 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" rowGap="md">
         {row(
           <Text wrap="truncate-end">
+            {permission ? <Text color="error" weight="bold">■ {permission} permission  </Text> : ''}
             {needYou ? <Text color="error" weight="bold">◐ {needYou} need you  </Text> : ''}
-            {needYou || stale || down ? '' : <Text color="success">● all clear</Text>}
+            {permission || needYou || stale || down ? '' : <Text color="success">● all clear</Text>}
             {stale ? <Text color="warning">◌ {stale} stale  </Text> : ''}
             {down ? <Text color="error">▼ {down} env down</Text> : ''}
           </Text>,
           <Button key="refresh" plain hotkey="r" label="↻ refresh" onPress={() => { lastRemote = 0; void tick($).catch(() => {}) }} />,
         )}
         {section('coordinators', '◆', 'Coordinators', s.coordinators, () =>
-          coords.map(c => (
-            <Box flexDirection="column">
-              {row(
-                <Text weight="bold" wrap="truncate-end">{mask(c.name)}</Text>,
-                <Text dimColor tabular>
-                  {isWide ? `${c.terminal}  ${c.model}  ` : ''}
-                  {c.quietMinutes !== undefined ? `${c.quietMinutes}m` : ''}
-                </Text>,
-              )}
-              {c.workers.length ? c.workers.map(worker) : row(<Text dimColor>no active workers</Text>, undefined, 2)}
-            </Box>
-          )),
+          coords.map(c => {
+            // Done rows fold into one count line; the rest show one row each.
+            const active = c.workers.filter(x => x.state !== 'done')
+            const done = c.workers.length - active.length
+            return (
+              <Box flexDirection="column">
+                {row(
+                  <Text weight="bold" wrap="truncate-end">{mask(c.name)}</Text>,
+                  <Text>
+                    <Text dimColor tabular>{isWide ? `${c.terminal}  ${c.model}  ` : ''}</Text>
+                    {c.isWaitingPermission ? (
+                      <Text color="error" weight="bold">■ waiting for permission</Text>
+                    ) : (
+                      <Text dimColor tabular>{c.quietMinutes !== undefined ? `${c.quietMinutes}m` : ''}</Text>
+                    )}
+                  </Text>,
+                )}
+                {active.map(worker)}
+                {done ? row(<Text color="subtle" dimColor>✓ +{done} done</Text>, undefined, 2) : ''}
+                {c.workers.length ? '' : row(<Text dimColor>no active workers</Text>, undefined, 2)}
+              </Box>
+            )
+          }),
           workers.length ? <Text dimColor tabular>  {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length}</Text> : undefined,
         )}
         {section('environments', '◎', 'Environments', s.environments, () =>
@@ -381,6 +412,7 @@ export const register: Register = (on, options) => {
     const { Text } = $.ui.resolve(e)
     const workers = (s.coordinators?.value ?? []).flatMap(c => c.workers)
     const input = workers.filter(x => x.state === 'input').length
+    const permission = workers.filter(x => x.state === 'permission').length + (s.coordinators?.value ?? []).filter(c => c.isWaitingPermission).length
     const stale = workers.filter(x => x.state === 'stale').length
     const envs = s.environments?.value ?? []
     const down = envs.filter(x => x.ready !== '200').length
@@ -391,6 +423,7 @@ export const register: Register = (on, options) => {
       <Text wrap="truncate-end">
         <Text color="claude" weight="bold">◆ chief  </Text>
         <Text>● {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length} workers  </Text>
+        {permission ? <Text color="error" weight="bold">■ {permission} permission  </Text> : ''}
         {input ? <Text color="error" weight="bold">◐ {input} need you  </Text> : ''}
         {stale ? <Text color="warning">◌ {stale} stale  </Text> : ''}
         <Text color={down ? 'error' : 'success'}>{down ? '▼' : '▲'} envs {envs.length - down}/{envs.length}  </Text>

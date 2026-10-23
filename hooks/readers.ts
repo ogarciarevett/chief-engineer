@@ -8,6 +8,7 @@ const DEFAULTS: Config = {
   coordinators: [],
   workersCommand: ['orca', 'orchestration', 'task-list', '--run', '{run}', '--status', 'dispatched', '--brief', '--json'],
   terminalsCommand: ['orca', 'terminal', 'list', '--json'],
+  screenCommand: ['orca', 'terminal', 'read', '--terminal', '{handle}', '--screen', '--json'],
   environments: [],
   readyPath: '/ready',
   statusPath: '/v1/system/status',
@@ -30,7 +31,7 @@ export function parseConfig(text: string): Config {
   const raw = JSON.parse(text) as Record<string, unknown>
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('config is not an object')
   const c = { ...DEFAULTS, ...raw } as Config
-  for (const k of ['workersCommand', 'terminalsCommand', 'repos', 'usageCommand', 'usageProviders'] as const) {
+  for (const k of ['workersCommand', 'terminalsCommand', 'screenCommand', 'repos', 'usageCommand', 'usageProviders'] as const) {
     if (!isStrings(c[k])) throw new Error(`${k} must be a list of strings`)
   }
   if (!Array.isArray(c.coordinators) || !c.coordinators.every(x => typeof x?.name === 'string' && (x.worktrees === undefined || isStrings(x.worktrees)))) {
@@ -48,6 +49,16 @@ export function parseConfig(text: string): Config {
 const minutesSince = (ms: number | undefined, now: number) => (ms ? Math.max(0, Math.floor((now - ms) / 60000)) : undefined)
 const INPUT = ['do you want to', '(y/n)', 'press enter', 'allow this', 'approve?']
 const PR = /(?:\bPR\s*#?|#)(\d{2,6})\b/i
+export const ORDER = { permission: 0, input: 1, stale: 2, running: 3, failed: 4, done: 5 }
+const PERMISSION = ['do you want to proceed?', 'esc to cancel', 'allow command?', 'do you trust', '❯ 1. yes']
+
+// A permission dialog sits at the bottom of the screen; only that a dialog is open
+// leaves this function, never the screen text.
+export function isPermissionPrompt(stdout: string): boolean {
+  const rows = (JSON.parse(stdout)?.result?.terminal?.tail ?? []) as string[]
+  const bottom = rows.slice(-20).join('\n').toLowerCase()
+  return PERMISSION.some(k => bottom.includes(k))
+}
 
 type Terminal = { handle: string; lastOutputAt?: number; preview?: string; title?: string; worktreePath?: string; agentIdentity?: string }
 
@@ -85,8 +96,7 @@ export function parseWorkers(stdout: string, terminals: ReturnType<typeof parseT
       if (now - ended < 3600_000) rows.push({ name, state: t.status === 'failed' ? 'failed' : 'done', pr })
     }
   }
-  const order = { input: 0, stale: 1, running: 2, failed: 3, done: 4 }
-  return rows.sort((a, b) => order[a.state] - order[b.state])
+  return rows.sort((a, b) => ORDER[a.state] - ORDER[b.state])
 }
 
 // Agent terminals under a coordinator's worktrees count as its workers too: the title
@@ -116,9 +126,18 @@ export function carryDone(prev: WorkerRow[], next: WorkerRow[], now: number): Wo
   return [...next, ...settled]
 }
 
-export function coordinatorRow(c: Config['coordinators'][number], workers: WorkerRow[], terminals: ReturnType<typeof parseTerminals>, now: number): CoordinatorRow {
+// One row per worker name: a live row beats a carried done one, and of two live
+// rows the more urgent one stays.
+export function mergeWorkers(rows: WorkerRow[]): WorkerRow[] {
+  const live = (w: WorkerRow) => (w.doneAt === undefined ? 0 : 1)
+  const sorted = [...rows].sort((a, b) => live(a) - live(b) || ORDER[a.state] - ORDER[b.state])
+  const seen = new Set<string>()
+  return sorted.filter(w => !seen.has(w.name) && !!seen.add(w.name))
+}
+
+export function coordinatorRow(c: Config['coordinators'][number], workers: WorkerRow[], terminals: ReturnType<typeof parseTerminals>, now: number, isWaitingPermission = false): CoordinatorRow {
   const term = c.terminal ? terminals.get(c.terminal) : undefined
-  return { name: c.name, terminal: (c.terminal ?? '').slice(0, 13), model: c.model ?? '', quietMinutes: minutesSince(term?.lastOutputAt, now), workers }
+  return { name: c.name, terminal: (c.terminal ?? '').slice(0, 13), model: c.model ?? '', quietMinutes: minutesSince(term?.lastOutputAt, now), workers, isWaitingPermission }
 }
 
 export function parseEnvStatus(body: string, field: string): string {
@@ -135,9 +154,15 @@ export function parsePrs(repo: string, stdout: string, now: number): RepoRow {
   return { repo, prs: list.map(p => ({ number: p.number, isOld: now - Date.parse(p.createdAt) > 24 * 3600_000 })).sort((a, b) => a.number - b.number) }
 }
 
+// Keeps the `word N%` parts of each line (with a known reset time) and drops the rest;
+// a line with none of them, like an error, stays as it is.
 export function parseUsage(stdout: string, providers: string[]): string[] {
   const lines = stdout.split('\n').filter(l => l.trim())
-  return (providers.length ? lines.filter(l => providers.some(p => l.startsWith(p + ':'))) : lines).map(mask)
+  return (providers.length ? lines.filter(l => providers.some(p => l.startsWith(p + ':'))) : lines).map(l => {
+    const [name = '', rest = ''] = l.split(/:\s*(.*)/)
+    const key = rest.split(/;\s*/).filter(p => /^\w+ \d+%/.test(p)).map(p => p.replace(/\s*\(resets \?\)/, ''))
+    return mask(key.length ? `${name}: ${key.join('; ')}` : l)
+  })
 }
 
 export function parseMachine(loadavg: string, pressure: string): Machine {
