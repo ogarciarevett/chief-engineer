@@ -5,6 +5,8 @@ import {
   isPermissionPrompt,
   mask,
   mergeWorkers,
+  levelOf,
+  loadState,
   machineLevel,
   parseConfig,
   parseEnvStatus,
@@ -157,14 +159,35 @@ test('usage: keeps the named providers only', () => {
   expect(parseUsage(out, [])).toEqual(['antigravity: session 0%; weekly 100%', 'claude: session 27% (resets 10:49 PM); weekly 35% (resets Thu 5:59 PM)', 'gemini: error: not signed in'])
 })
 
-test('machine: parsed and coloured by the thresholds', () => {
-  const m = parseMachine('{ 4.87 6.35 5.55 }', 'System-wide memory free percentage: 48%')
-  expect(m).toEqual({ load: 4.87, freePercent: 48 })
-  expect(machineLevel(m)).toBe('success')
-  expect(machineLevel({ load: 25, freePercent: 48 })).toBe('warning')
-  expect(machineLevel({ load: 31, freePercent: 48 })).toBe('error')
-  expect(machineLevel({ load: 5, freePercent: 20 })).toBe('error')
-  expect(() => parseMachine('', '')).toThrow()
+const SYSCTL = '{ 11.20 10.73 9.45 }\ntotal = 7168.00M  used = 5939.20M  free = 1228.80M  (encrypted)\n18\n38654705664\n'
+const TOP = 'CPU usage: 48.63% user, 27.1% sys, 24.34% idle \nCPU usage: 29.82% user, 8.18% sys, 62.00% idle \n'
+const LIMITS = { load: 30, swapGB: 8, memoryPercent: 60 }
+
+test('machine: load with cores, CPU, used memory and swap', () => {
+  const m = parseMachine(SYSCTL, 'System-wide memory free percentage: 46%', TOP)
+  expect(m).toEqual({ load: 11.2, cores: 18, cpuPercent: 38, memoryPercent: 54, memoryGB: 36, swapUsedGB: 5.8, swapTotalGB: 7 })
+  expect(parseMachine(SYSCTL.replace('7168.00M', '2.50G'), 'free percentage: 46%', TOP).swapTotalGB).toBe(2.5)
+  expect(machineLevel(m, LIMITS)).toBe('warning')
+  expect(machineLevel({ ...m, memoryPercent: 40 }, LIMITS)).toBe('success')
+  for (const bad of [['', '', ''], [SYSCTL, '', TOP], [SYSCTL, 'free percentage: 46%', ''], ['{ 1.0 }\n\n\n', 'free percentage: 46%', TOP]]) {
+    expect(() => parseMachine(bad[0]!, bad[1]!, bad[2]!)).toThrow()
+  }
+})
+
+test('machine: load state by core count and limit; bars by their limits', () => {
+  const m = parseMachine(SYSCTL, 'free percentage: 46%', TOP)
+  expect(loadState(m, 30)).toEqual(['success', 'ok'])
+  expect(loadState({ ...m, load: 18 }, 30)).toEqual(['warning', 'busy'])
+  expect(loadState({ ...m, load: 30 }, 30)).toEqual(['warning', 'busy'])
+  expect(loadState({ ...m, load: 31 }, 30)).toEqual(['error', 'overloaded'])
+  expect(levelOf(5.8, 8)).toBe('success')
+  expect(levelOf(7, 8)).toBe('warning')
+  expect(levelOf(9, 8)).toBe('error')
+  expect(machineLevel({ ...m, swapUsedGB: 9 }, LIMITS)).toBe('error')
+  expect(machineLevel({ ...m, memoryPercent: 55 }, LIMITS)).toBe('warning')
+  expect(parseConfig('{}').limits).toEqual(LIMITS)
+  expect(parseConfig('{"limits":{"load":20}}').limits).toEqual({ ...LIMITS, load: 20 })
+  expect(() => parseConfig('{"limits":{"swapGB":"8"}}')).toThrow(/limits/)
 })
 
 test('owner steps: items with continuations, done ones hidden', () => {
@@ -212,7 +235,9 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
         : a.startsWith('gh ')
           ? JSON.stringify([{ number: 42, createdAt: '2020-01-01T00:00:00Z' }])
           : a.includes('sysctl')
-            ? '{ 4.0 3.0 2.0 }'
+            ? SYSCTL
+            : a.startsWith('/usr/bin/top')
+            ? TOP
             : a.includes('memory_pressure')
               ? 'System-wide memory free percentage: 48%'
               : a.includes('tail')
@@ -236,7 +261,7 @@ test('the pane shows all seven panels from the config, on every surface', async 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    for (const words of [/^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /4\.0/, /48%/, /☐ Approve the release/, /hello chief/, /1 need you/, /■ Side task in a worktree/, /^■ waiting for permission$/, /■ 2 permission/, /✓ \+1 done/]) {
+    for (const words of [/^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /^load 11\.2 \/ 18 cores$/, /^ {8}ok $/, /^CPU used 38%$/, /^memory used 52% \(18\.7 of 36 GB\)$/, /^swap used 5\.8 of 7\.0 GB$/, /☐ Approve the release/, /hello chief/, /1 need you/, /■ Side task in a worktree/, /^■ waiting for permission$/, /■ 2 permission/, /✓ \+1 done/]) {
       expect((await ui.find({ type: 'Text', text: words }))?.text).toMatch(words)
     }
     expect(await ui.find({ type: 'Text', text: /codex/ })).toBe(undefined)
@@ -244,7 +269,7 @@ test('the pane shows all seven panels from the config, on every surface', async 
     await ui.unmount()
   }
   // Read-only commands only.
-  for (const argv of runs) expect(['orca', 'gh', '/usr/sbin/sysctl', '/usr/bin/memory_pressure', '/usr/bin/tail', '/bin/usage']).toContain(argv[0])
+  for (const argv of runs) expect(['orca', 'gh', '/usr/sbin/sysctl', '/usr/bin/memory_pressure', '/usr/bin/top', '/usr/bin/tail', '/bin/usage']).toContain(argv[0])
   expect(runs.some(a => a.includes('--run') && a.includes('run_a'))).toBe(true)
   expect(runs.filter(a => a.includes('--screen')).map(a => a[4]).sort()).toEqual(['term_alpha', 'term_t1', 'term_w1', 'term_w2', 'term_w3'])
 })
@@ -270,6 +295,14 @@ test('a section header collapses and opens its section; PR numbers link to GitHu
   await ui.press({ key: 'expand-step-Approve the release https://x.test/3' })
   expect(await step()).toBe('truncate-end')
   expect(await ui.find({ type: 'Button', key: 'expand-worker-term_w1' })).toBeDefined()
+  // Load and swap explain themselves on a press, in one line each.
+  for (const [id, help] of [['load', /^load = programs running or waiting for a CPU; over the core count they wait, over 30 the Mac freezes and we stop new heavy work$/], ['swap', /^swap = memory moved to disk; over 8 GB the Mac slows down$/]] as const) {
+    expect(await ui.find({ type: 'Text', text: help })).toBe(undefined)
+    await ui.press({ key: `help-${id}` })
+    expect((await ui.find({ type: 'Text', text: help }))?.text).toMatch(help)
+    await ui.press({ key: `help-${id}` })
+    expect(await ui.find({ type: 'Text', text: help })).toBe(undefined)
+  }
   await ui.unmount()
 })
 
@@ -327,6 +360,6 @@ test('the band sums it up while the pane is closed', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'chief-engineer', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 160 } } as any)
   const text = (await band.find({ type: 'Text', text: /◆ chief/ }))?.text ?? ''
-  expect(text).toMatch(/● 4 workers  ■ 2 permission  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs/)
+  expect(text).toMatch(/● 4 workers  ■ 2 permission  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs  ▣ load 11\/18 mem 52% swap 5\.8G/)
   await band.unmount()
 })

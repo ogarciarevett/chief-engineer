@@ -44,7 +44,7 @@ While the pane is closed, a one-line band above the prompt sums up what needs yo
   service, no paid API calls, no API key.
 - **It never shows secrets.** No message bodies, terminal output or environment
   variables; phone-like numbers are masked.
-- **Tested.** 21 tests run in CI with `claude plugin test`; the status list below
+- **Tested.** 22 tests run in CI with `claude plugin test`; the status list below
   says what is done and what is not.
 
 ## Install details
@@ -78,8 +78,17 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
 4. **Usage**: the key percentages (`session 12%`, `weekly 31%`) of your usage
    command for the providers you name, with known reset times; other detail is
    dropped.
-5. **Machine**: load average and free memory percent. Green under load 20 with
-   over 40 % free, red above load 30 or under 25 % free, yellow between.
+5. **Machine**: four lines.
+   - `load 11.2 / 18 cores ok`: programs running or waiting for a CPU. `ok` under
+     the core count, `busy` from the core count to `limits.load` (30), `overloaded`
+     over it. Over the core count programs wait; over 30 the Mac freezes, so stop
+     new heavy work.
+   - `CPU used 62%`: all cores together, over the last second.
+   - `memory used 54% (19.4 of 36 GB)`: the bar fills for used memory.
+   - `swap used 5.8 of 7.2 GB`: memory moved to disk. Over 8 GB the Mac slows down.
+
+   Load and swap rows show this help in one line when you press them. A bar is
+   yellow from 80 % of its limit and red over it (`limits` in the config). The CPU bar uses a fixed limit of 90 %.
 6. **Owner steps**: every open `- ` item of a Markdown file you maintain; `- [x]`
    items are hidden.
 7. **Mailbox**: the last 5 messages of an append-only JSONL file (time, sender,
@@ -117,10 +126,11 @@ columns (handles, models, times, meters) drop out.
 | `usageProviders` | `[]` | Providers to keep from that output; empty keeps every line. |
 | `mailbox` | `""` | Path (`~/` allowed, as for `ownerSteps`) of a JSONL file with `{ at, from, subject }` per line. `from` values that match a coordinator's `terminal` show its name. |
 | `ownerSteps` | `""` | Path of the Markdown file of open owner steps. |
+| `limits` | `{ "load": 30, "swapGB": 8, "memoryPercent": 60 }` | Machine limits. Load over `load` is overloaded; swap and memory bars turn red over theirs. Set only the ones you change. |
 
 ## Rules it keeps
 
-- Read-only commands only: `orca ... list`, `orca terminal read --screen`, `gh pr list`, `sysctl`, `memory_pressure`,
+- Read-only commands only: `orca ... list`, `orca terminal read --screen`, `gh pr list`, `sysctl`, `memory_pressure`, `top -l 2 -n 0`,
   `tail`, your usage command, and HTTP GETs.
 - No paid API calls and no hosted service.
 - It never shows message bodies, terminal output or environment variables.
@@ -130,7 +140,7 @@ columns (handles, models, times, meters) drop out.
 
 ## Status
 
-Implemented and covered by `claude plugin test` (21 tests):
+Implemented and covered by `claude plugin test` (22 tests):
 
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, terminal workers, worker merge, permission dialogs, environments, PRs,
@@ -148,7 +158,7 @@ Implemented and covered by `claude plugin test` (21 tests):
 Pending:
 
 - Coordinator context percent: not shown; no cheap read-only source yet.
-- Machine readings use macOS tools (`sysctl vm.loadavg`, `memory_pressure`); Linux
+- Machine readings use macOS tools (`sysctl`, `memory_pressure`, `top`); Linux
   is not supported yet.
 - Done is not split from failed for workers that leave the dispatched list.
 - Sections cut long lines to the pane width; the pane scrolls with the arrows while it has the keyboard.

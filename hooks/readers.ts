@@ -1,6 +1,6 @@
 // Pure parsers: each takes what a command or file gave and returns rows to draw.
 // No I/O here, so every reader is tested with plain strings.
-import type { Config, CoordinatorRow, EnvRow, Machine, MailRow, RepoRow, WorkerRow } from '../types'
+import type { Config, CoordinatorRow, EnvRow, Limits, Machine, MailRow, RepoRow, WorkerRow } from '../types'
 
 const DEFAULTS: Config = {
   pollSeconds: 60,
@@ -18,6 +18,7 @@ const DEFAULTS: Config = {
   usageProviders: [],
   mailbox: '',
   ownerSteps: '',
+  limits: { load: 30, swapGB: 8, memoryPercent: 60 },
 }
 
 // Phone-like numbers never reach the pane: `+` and 9+ digits, or 9+ digits in a row.
@@ -43,6 +44,8 @@ export function parseConfig(text: string): Config {
   // Remote reads stay cheap: never poll faster than 30 s.
   c.pollSeconds = Math.max(30, Number(c.pollSeconds) || DEFAULTS.pollSeconds)
   c.staleMinutes = Math.max(1, Number(c.staleMinutes) || DEFAULTS.staleMinutes)
+  c.limits = { ...DEFAULTS.limits, ...(raw.limits as object) }
+  if (!Object.values(c.limits).every(v => typeof v === 'number' && v > 0)) throw new Error('limits must be positive numbers')
   return c
 }
 
@@ -171,18 +174,42 @@ export function parseUsage(stdout: string, providers: string[]): string[] {
   })
 }
 
-export function parseMachine(loadavg: string, pressure: string): Machine {
-  const load = Number(loadavg.match(/[\d.]+/)?.[0])
-  const freePercent = Number(pressure.match(/free percentage:\s*(\d+)/i)?.[1])
-  if (!Number.isFinite(load) || !Number.isFinite(freePercent)) throw new Error('machine stats not readable')
-  return { load, freePercent }
+// `sysctl -n vm.loadavg vm.swapusage hw.ncpu hw.memsize` prints one line per name, in that order.
+export function parseMachine(sysctl: string, pressure: string, top: string): Machine {
+  const [loadavg = '', swap = '', ncpu = '', memsize = ''] = sysctl.split('\n')
+  const gb = (key: string) => {
+    const m = swap.match(new RegExp(`${key} = ([\\d.]+)([MG])`))
+    return m ? Number(m[1]) / (m[2] === 'M' ? 1024 : 1) : NaN
+  }
+  const free = Number(pressure.match(/free percentage:\s*(\d+)/i)?.[1])
+  // top's first sample counts since boot; the last one is the live second.
+  const idle = Number([...top.matchAll(/([\d.]+)% idle/g)].pop()?.[1])
+  const m: Machine = {
+    load: Number(loadavg.match(/[\d.]+/)?.[0]),
+    cores: Number(ncpu),
+    cpuPercent: Math.round(100 - idle),
+    memoryPercent: 100 - free,
+    memoryGB: Number(memsize) / 2 ** 30,
+    swapUsedGB: gb('used'),
+    swapTotalGB: gb('total'),
+  }
+  if (!Object.values(m).every(Number.isFinite) || !m.cores || !m.memoryGB) throw new Error('machine stats not readable')
+  return m
 }
 
-// Heavy jobs only under load 20 and over 40 % free; pause above 30 or under 25 % free.
-export function machineLevel(m: Machine): 'success' | 'warning' | 'error' {
-  if (m.load > 30 || m.freePercent < 25) return 'error'
-  if (m.load < 20 && m.freePercent > 40) return 'success'
-  return 'warning'
+export type Level = 'success' | 'warning' | 'error'
+// Red over the limit, yellow from 80 % of it.
+export const levelOf = (value: number, limit: number): Level => (value > limit ? 'error' : value > limit * 0.8 ? 'warning' : 'success')
+
+// Under the core count every program gets a CPU; up to the limit they wait; over it the Mac freezes.
+export function loadState(m: Machine, limit: number): [Level, string] {
+  return m.load > limit ? ['error', 'overloaded'] : m.load >= m.cores ? ['warning', 'busy'] : ['success', 'ok']
+}
+
+const RANK = { success: 0, warning: 1, error: 2 }
+export function machineLevel(m: Machine, limits: Limits): Level {
+  const all = [loadState(m, limits.load)[0], levelOf(m.memoryPercent, limits.memoryPercent), levelOf(m.swapUsedGB, limits.swapGB)]
+  return all.reduce((a, b) => (RANK[b] > RANK[a] ? b : a))
 }
 
 // Each `- ` item is a step; indented lines below it continue it; `- [x]` is done.

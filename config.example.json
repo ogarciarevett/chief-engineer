@@ -19,5 +19,6 @@
   "usageCommand": ["/path/to/usage-script"],
   "usageProviders": ["claude", "codex", "cursor"],
   "mailbox": "/path/to/mailbox/inbox.jsonl",
-  "ownerSteps": "/path/to/owner-steps.md"
+  "ownerSteps": "/path/to/owner-steps.md",
+  "limits": { "load": 30, "swapGB": 8, "memoryPercent": 60 }
 }

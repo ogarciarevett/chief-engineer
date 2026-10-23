@@ -14,6 +14,8 @@ import {
   ORDER,
   coordinatorRow,
   envRow,
+  levelOf,
+  loadState,
   machineLevel,
   parseConfig,
   parseEnvStatus,
@@ -30,7 +32,7 @@ import {
 const PANE = 'chief-engineer'
 const TITLE = 'Chief engineer'
 const LOCAL_MS = 10_000
-const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-1' })
+const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-2' })
 const isPaneOpen = atom({ plugin: 'chief-engineer', key: 'isPaneOpen' } as const, false)
 const collapsed = atom({ plugin: 'chief-engineer', key: 'collapsed' } as const, [] as string[])
 const expanded = atom({ plugin: 'chief-engineer', key: 'expanded' } as const, [] as string[])
@@ -122,7 +124,15 @@ async function readRemote($: $, c: Config) {
 async function readLocal($: $, c: Config) {
   const names = new Map(c.coordinators.filter(x => x.terminal).map(x => [x.terminal!, x.name]))
   await Promise.all([
-    refresh($, 'machine', async () => parseMachine(await run($, ['/usr/sbin/sysctl', '-n', 'vm.loadavg']), await run($, ['/usr/bin/memory_pressure']))),
+    refresh($, 'machine', async () => {
+      const [sysctl, pressure, top] = await Promise.all([
+        run($, ['/usr/sbin/sysctl', '-n', 'vm.loadavg', 'vm.swapusage', 'hw.ncpu', 'hw.memsize']),
+        run($, ['/usr/bin/memory_pressure']),
+        // Two one-second samples: the first is an average since boot.
+        run($, ['/usr/bin/top', '-l', '2', '-n', '0', '-s', '1']),
+      ])
+      return parseMachine(sysctl, pressure, top)
+    }),
     c.ownerSteps ? refresh($, 'steps', async () => parseSteps(await $.fs.read(c.ownerSteps))) : undefined,
     c.mailbox ? refresh($, 'mail', async () => parseMail(await run($, ['/usr/bin/tail', '-n', '5', c.mailbox]), names)) : undefined,
   ])
@@ -372,11 +382,33 @@ export const register: Register = (on, options) => {
           : ''}
         {section('machine', '▣', 'Machine', s.machine, () => {
           if (!m) return <Text dimColor>no reading yet</Text>
-          const loadLevel = m.load > 30 ? 'error' : m.load < 20 ? 'success' : 'warning'
-          const freeLevel = m.freePercent < 25 ? 'error' : m.freePercent > 40 ? 'success' : 'warning'
+          const lim = cfg.limits
+          const [loadLevel, loadWord] = loadState(m, lim.load)
+          const memoryLevel = levelOf(m.memoryPercent, lim.memoryPercent)
+          const swapLevel = levelOf(m.swapUsedGB, lim.swapGB)
+          const cpuLevel = levelOf(m.cpuPercent, 90)
+          // A press on a row with help shows one line on what the number means.
+          const line = (id: string, label: string, frac: number, color: string, word?: string, help?: string) => {
+            const isOpen = full.includes(id)
+            const label_ = <Text tabular wrap="truncate-end">{label}</Text>
+            // With bars, the word column is as wide as 'overloaded' on every row, so the bars line up.
+            const body = row(
+              help ? <Button key={`help-${id}`} plain onPress={() => update($, expanded, list => (isOpen ? list.filter(x => x !== id) : [...list, id]))}>{label_}</Button> : label_,
+              <Text tabular><Text color={color}>{isWide ? `${(word ?? '').padStart(10)} ` : word ? `${word} ` : ''}</Text>{isWide ? meter(frac, color) : ''}</Text>,
+            )
+            if (!isOpen) return body
+            return (
+              <Box flexDirection="column">
+                {body}
+                {row(<Text dimColor wrap="wrap">{help}</Text>, undefined, 2)}
+              </Box>
+            )
+          }
           return [
-            row(<Text>load</Text>, <Text tabular>{isWide ? meter(m.load / 30, loadLevel) : ''} <Text color={loadLevel}>{m.load.toFixed(1).padStart(5)}</Text></Text>),
-            row(<Text>free memory</Text>, <Text tabular>{isWide ? meter(m.freePercent / 100, freeLevel) : ''} <Text color={freeLevel}>{`${m.freePercent}%`.padStart(5)}</Text></Text>),
+            line('load', `load ${m.load.toFixed(1)} / ${m.cores} cores`, m.load / lim.load, loadLevel, loadWord, `load = programs running or waiting for a CPU; over the core count they wait, over ${lim.load} the Mac freezes and we stop new heavy work`),
+            line('cpu', `CPU used ${m.cpuPercent}%`, m.cpuPercent / 100, cpuLevel),
+            line('memory', `memory used ${m.memoryPercent}% (${(m.memoryGB * m.memoryPercent / 100).toFixed(1)} of ${Math.round(m.memoryGB)} GB)`, m.memoryPercent / 100, memoryLevel),
+            line('swap', `swap used ${m.swapUsedGB.toFixed(1)} of ${m.swapTotalGB.toFixed(1)} GB`, m.swapUsedGB / lim.swapGB, swapLevel, undefined, `swap = memory moved to disk; over ${lim.swapGB} GB the Mac slows down`),
           ]
         })}
         {cfg.ownerSteps
@@ -433,7 +465,7 @@ export const register: Register = (on, options) => {
         {stale ? <Text color="warning">◌ {stale} stale  </Text> : ''}
         <Text color={down ? 'error' : 'success'}>{down ? '▼' : '▲'} envs {envs.length - down}/{envs.length}  </Text>
         <Text>◇ {prs} PRs  </Text>
-        {m ? <Text color={machineLevel(m)}>▣ load {m.load.toFixed(0)} free {m.freePercent}%  </Text> : ''}
+        {m ? <Text color={machineLevel(m, s.config.value.limits)}>▣ load {m.load.toFixed(0)}/{m.cores} mem {m.memoryPercent}% swap {m.swapUsedGB.toFixed(1)}G  </Text> : ''}
         {steps ? <Text color="warning">☐ {steps} steps  </Text> : ''}
         <Text dimColor>/chief</Text>
       </Text>
