@@ -2,6 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   cachedMachine,
+  parseTaskStatus,
+  taskGroups,
+  taskIsStale,
   carryDone,
   isChiefSession,
   MACHINE_TTL_MS,
@@ -254,6 +257,7 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
   on('fs.write', (_$: any, e: any) => ((cache = e.text), { value: undefined }))
   on('fs.read', (_$: any, e: any) => {
+    if (e.path.endsWith('/.orca/task-status.json')) throw new Error('ENOENT')
     if (e.path.endsWith('/machine.json')) {
       if (!cache) throw new Error('ENOENT')
       return { value: cache }
@@ -427,4 +431,57 @@ test('the machine is read once per TTL through the shared cache', async ($, on) 
   expect(runs.filter(a => a[0] === '/bin/ps').length).toBe(1)
   expect(JSON.parse(runs.cache()).value.cpuPercent).toBe(38)
   expect(runs.some(a => a[0] === '/usr/bin/top')).toBe(false)
+})
+
+const STATUS = { task: 'Fix login', pr: '#12', state: 'running', left: 'Review and merge', eta_utc: '2026-10-23T17:00:00Z', updated: '2026-10-23T15:50:00Z' }
+
+test('task status: validates fields and UTC dates, bounds and masks text, drops extra data', () => {
+  expect(parseTaskStatus(JSON.stringify({ ...STATUS, task: 'Fix\nlogin +12345678901', secret: 'do not show' }))).toEqual({ ...STATUS, task: 'Fix login [number]' })
+  for (const value of [null, [], {}, { ...STATUS, task: '' }, { ...STATUS, left: 3 }, { ...STATUS, updated: 'yesterday' }, { ...STATUS, eta_utc: '2026-10-23T17:00:00' }, { ...STATUS, task: 'x'.repeat(2001) }]) {
+    expect(() => parseTaskStatus(JSON.stringify(value))).toThrow()
+  }
+  expect(() => parseTaskStatus('x'.repeat(16385))).toThrow()
+  expect(parseTaskStatus(JSON.stringify({ ...STATUS, eta_utc: '' })).eta_utc).toBe('')
+})
+
+test('tasks: stale at twenty minutes, unknown and future updates are stale', () => {
+  expect([NOW - 19 * 60000, NOW - 20 * 60000, NOW + 60000].map(t => taskIsStale(new Date(t).toISOString(), NOW))).toEqual([false, true, true])
+  expect(taskIsStale('', NOW)).toBe(true)
+})
+
+test('tasks: parent before sub-coordinator, one row per handle, status or title fallback', () => {
+  const config = parseConfig(JSON.stringify({ coordinators: [{ name: 'Child', parent: 'Root' }, { name: 'Other' }, { name: 'Root' }] }))
+  const worker = { name: 'Terminal title', state: 'running' as const, handle: 'one', worktreePath: '/w/task' }
+  const coords = [
+    { name: 'Root', terminal: '', model: '', workers: [worker, { name: 'Finished', state: 'done' as const }] },
+    { name: 'Child', terminal: '', model: '', workers: [worker, { name: 'Review PR #9', pr: '9', state: 'input' as const, handle: 'two' }] },
+  ]
+  const groups = taskGroups(config, coords, new Map([['/w/task', STATUS]]), NOW)
+  expect(groups.map(g => g.coordinator)).toEqual(['Root', 'Root / Child'])
+  expect(groups[0]?.rows[0]).toEqual({ ...STATUS, key: 'one', stale: false, fallback: false })
+  expect(groups[1]?.rows[0]).toEqual({ task: 'Review PR #9', pr: '#9', state: 'input', left: 'unknown', eta_utc: '', updated: '', key: 'two', stale: true, fallback: true })
+  for (const coordinators of [[{ name: 'A', parent: 'B' }], [{ name: 'A', parent: 'A' }], [{ name: 'A', parent: 'B' }, { name: 'B', parent: 'A' }], [{ name: 'A' }, { name: 'A' }]]) {
+    expect(() => parseConfig(JSON.stringify({ coordinators }))).toThrow()
+  }
+})
+
+test('Tasks reads each worktree once per TTL, uses the most specific coordinator, and renders status', async ($, on) => {
+  const runs = engine(on, { config: { ...CONFIG, coordinators: [CONFIG.coordinators[0], { name: 'Sub', parent: 'Alpha', worktrees: ['/w/alpha-x'] }] } })
+  let fileReads = 0
+  on('fs.read', (_$: any, e: any, next: any) => {
+    if (!e.path.endsWith('/.orca/task-status.json')) return next(e)
+    fileReads++
+    return { value: JSON.stringify({ ...STATUS, updated: new Date().toISOString() }) }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Tasks$/ }))?.text).toBe('Tasks')
+  expect((await ui.find({ type: 'Text', text: /^Alpha \/ Sub$/ }))?.text).toBe('Alpha / Sub')
+  expect(await ui.find({ type: 'Text', text: /Fix login/ })).toBeDefined()
+  expect(fileReads).toBe(1)
+  await runs.clock.advance(10_000)
+  expect(fileReads).toBe(1)
+  // Status files introduce no processes beyond the existing remote inventory and local readers.
+  expect(runs.filter(a => a.includes('terminal') && a.includes('list')).length).toBe(1)
+  await ui.unmount()
 })

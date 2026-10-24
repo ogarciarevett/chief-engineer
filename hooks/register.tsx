@@ -4,9 +4,13 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Config, Section, Snapshot, WorkerRow } from '../types'
+import type { Config, Section, Snapshot, TaskStatus, WorkerRow } from '../types'
 import {
   carryDone,
+  MACHINE_TTL_MS,
+  parseTaskStatus,
+  taskGroups,
+  taskIsStale,
   expandHome,
   cachedMachine,
   isChiefSession,
@@ -83,8 +87,17 @@ async function readRemote($: $, c: Config) {
         c.coordinators.map(async co => (co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : [])),
       )
       for (const w of dispatched.flat()) if (w.handle) seen.add(w.handle)
-      const mine = c.coordinators.map(co => {
-        const rows = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes)
+      const inventory = JSON.parse(terminalsOut)?.result?.terminals ?? []
+      const paths = new Map<string, string>(inventory.filter((t: any) => typeof t.worktreePath === 'string').map((t: any) => [t.handle, t.worktreePath]))
+      const owners = new Map<string, number>(inventory.map((t: any) => {
+        let owner = -1, length = -1
+        c.coordinators.forEach((co, i) => (co.worktrees ?? []).forEach(path => {
+          if (t.worktreePath?.startsWith(path) && path.length > length) { owner = i; length = path.length }
+        }))
+        return [t.handle, owner]
+      }))
+      const mine = c.coordinators.map((co, i) => {
+        const rows = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes).filter(w => owners.get(w.handle!) === i)
         for (const w of rows) seen.add(w.handle!)
         return rows
       })
@@ -98,13 +111,14 @@ async function readRemote($: $, c: Config) {
           ),
         ),
       )
-      return c.coordinators.map((co, i) => {
+      const result = c.coordinators.map((co, i) => {
         const live = [...dispatched[i]!, ...mine[i]!]
-          .map(w => (w.handle && blocked.has(w.handle) ? { ...w, state: 'permission' as const } : w))
+          .map(w => ({ ...w, worktreePath: w.worktreePath ?? paths.get(w.handle ?? ''), ...(w.handle && blocked.has(w.handle) ? { state: 'permission' as const } : {}) }))
           .sort((a, b) => ORDER[a.state] - ORDER[b.state])
         const workers = mergeWorkers(carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now()))
         return coordinatorRow(co, workers, terminals, now(), !!co.terminal && blocked.has(co.terminal))
       })
+      return result
     }),
     refresh($, 'environments', () =>
       Promise.all(
@@ -125,9 +139,25 @@ async function readRemote($: $, c: Config) {
   ])
 }
 
+// One bounded file read per distinct active worktree per TTL, in the configured session only.
+const taskFiles = new Map<string, { at: number; status?: TaskStatus }>()
+async function readTasks($: $, c: Config) {
+  const coords = (await read($, snapshot)).coordinators?.value ?? []
+  const paths = new Set(coords.flatMap(co => co.workers.filter(w => w.state !== 'done' && w.state !== 'failed').map(w => w.worktreePath).filter((p): p is string => !!p && p.startsWith('/'))))
+  for (const path of taskFiles.keys()) if (!paths.has(path)) taskFiles.delete(path)
+  await Promise.all([...paths].map(async path => {
+    const cached = taskFiles.get(path)
+    if (cached && Date.now() - cached.at < MACHINE_TTL_MS) return
+    const status = await $.fs.read(path.replace(/\/$/, '') + '/.orca/task-status.json').then(parseTaskStatus, () => undefined).catch(() => undefined)
+    taskFiles.set(path, { at: Date.now(), status })
+  }))
+  return taskGroups(c, coords, new Map([...taskFiles].flatMap(([path, v]) => v.status ? [[path, v.status] as const] : [])), Date.now())
+}
+
 async function readLocal($: $, c: Config) {
   const names = new Map(c.coordinators.filter(x => x.terminal).map(x => [x.terminal!, x.name]))
   await Promise.all([
+    refresh($, 'tasks', () => readTasks($, c)),
     refresh($, 'machine', async () => {
       const cache = expandHome(MACHINE_CACHE, (await $.env.get('HOME')) ?? '')
       const hit = await $.fs.read(cache).then(t => cachedMachine(t, Date.now()), () => undefined)
@@ -144,6 +174,14 @@ async function readLocal($: $, c: Config) {
     c.ownerSteps ? refresh($, 'steps', async () => parseSteps(await $.fs.read(c.ownerSteps))) : undefined,
     c.mailbox ? refresh($, 'mail', async () => parseMail(await run($, ['/usr/bin/tail', '-n', '5', c.mailbox]), names)) : undefined,
   ])
+}
+
+const taskTable = (values: string[], width: number) => {
+  const widths = width >= 60 ? [width - 44, 6, 8, 12, 7, 6] : [Math.max(4, width - 34), 4, 6, 8, 6, 5]
+  return values.map((v, i) => {
+    const n = widths[i]!
+    return (v.length > n ? v.slice(0, n - 1) + '…' : v).padEnd(n)
+  }).join(' ')
 }
 
 const ago = (ms: number) => {
@@ -167,7 +205,7 @@ async function tick($: $) {
     if (!busy.remote && Date.now() - lastRemote >= c.pollSeconds * 1000) {
       busy.remote = true
       lastRemote = Date.now()
-      void readRemote($, c).finally(() => (busy.remote = false))
+      void readRemote($, c).then(() => refresh($, 'tasks', () => readTasks($, c))).finally(() => (busy.remote = false))
     }
   } finally {
     busy.local = false
@@ -188,6 +226,7 @@ export const register: Register = (on, options) => {
     // Every other session on the Mac registers nothing and starts no process.
     const c = await readConfig($, configPath).catch(() => undefined)
     if (!c || !isChiefSession(c, await $.env.get('ORCA_TERMINAL_HANDLE'), e.cwd)) return r
+    taskFiles.clear()
     await $.command.register({ name: 'chief', description: 'Open the chief engineer pane' }).catch(() => {})
     void open($).catch(() => {})
     void tick($).catch(() => {})
@@ -329,6 +368,25 @@ export const register: Register = (on, options) => {
             )
           }),
           workers.length ? <Text dimColor tabular>  {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length}</Text> : undefined,
+        )}
+        {section('tasks', '☷', 'Tasks', s.tasks, () =>
+          (s.tasks?.value ?? []).length ? (s.tasks?.value ?? []).map(group => (
+            <Box flexDirection="column">
+              <Text weight="bold" wrap="truncate-end">{mask(group.coordinator)}</Text>
+              <Text dimColor mono>{taskTable(['Task', 'PR', 'State', 'Left', 'ETA UTC', 'Updated'], w)}</Text>
+              {group.rows.map(task => {
+                const stale = taskIsStale(task.updated, Date.now())
+                const stamp = (v: string) => v ? v.slice(11, 16) : '?'
+                const fullText = `${task.task} | PR ${task.pr || '—'} | ${task.state}${stale ? ' (stale)' : ''} | Left: ${task.left || '—'} | ETA UTC: ${task.eta_utc || '?'} | Updated UTC: ${task.updated || '?'}${task.fallback ? ' (title only)' : ''}`
+                const isFull = full.includes(`task-${task.key}`)
+                return row(
+                  <Button key={`expand-task-${task.key}`} plain onPress={() => update($, expanded, list => isFull ? list.filter(x => x !== `task-${task.key}`) : [...list, `task-${task.key}`])}>
+                    <Text mono color={stale ? 'warning' : undefined} wrap={isFull ? 'wrap' : 'truncate-end'}>{mask(isFull ? fullText : taskTable([task.task, task.pr || '—', stale ? 'stale' : task.state, task.left || '—', stamp(task.eta_utc), stamp(task.updated)], w))}</Text>
+                  </Button>, undefined, 2,
+                )
+              })}
+            </Box>
+          )) : <Text dimColor>no active tasks</Text>,
         )}
         {section('environments', '◎', 'Environments', s.environments, () =>
           envs.map(env => {

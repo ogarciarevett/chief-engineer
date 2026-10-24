@@ -73,13 +73,18 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
    shows once, with its newest state; done workers fold into one `+N done` line.
    A coordinator or worker whose screen shows a permission dialog is red and
    listed first. Input rows are red, stale rows are yellow.
-2. **Environments**: per environment, the HTTP code of `/ready`, the state field of
+2. **Tasks**: one row per active worker, grouped by coordinator and sub-coordinator,
+   with task, PR, state, what is left, ETA (UTC), and last update. Workers write
+   `.orca/task-status.json` in their worktree; missing files fall back to terminal
+   titles, with unknown progress and ETA. Updates at least 20 minutes old are
+   flagged stale. See [the format and example](docs/task-status.md).
+3. **Environments**: per environment, the HTTP code of `/ready`, the state field of
    the status endpoint, and the time of the last check.
-3. **Open PRs** per repo: count and numbers; a PR older than 24 hours is yellow.
-4. **Usage**: the key percentages (`session 12%`, `weekly 31%`) of your usage
+4. **Open PRs** per repo: count and numbers; a PR older than 24 hours is yellow.
+5. **Usage**: the key percentages (`session 12%`, `weekly 31%`) of your usage
    command for the providers you name, with known reset times; other detail is
    dropped.
-5. **Machine**: four lines.
+6. **Machine**: four lines.
    - `load 11.2 / 18 cores ok`: programs running or waiting for a CPU. `ok` under
      the core count, `busy` from the core count to `limits.load` (30), `overloaded`
      over it. Over the core count programs wait; over 30 the Mac freezes, so stop
@@ -90,9 +95,9 @@ To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`
 
    Load and swap rows show this help in one line when you press them. A bar is
    yellow from 80 % of its limit and red over it (`limits` in the config). The CPU bar uses a fixed limit of 90 %.
-6. **Owner steps**: every open `- ` item of a Markdown file you maintain; `- [x]`
+7. **Owner steps**: every open `- ` item of a Markdown file you maintain; `- [x]`
    items are hidden.
-7. **Mailbox**: the last 5 messages of an append-only JSONL file (time, sender,
+8. **Mailbox**: the last 5 messages of an append-only JSONL file (time, sender,
    subject). Message bodies are never shown.
 
 Every section header shows an icon, the age of its last good read, and toggles the
@@ -114,7 +119,7 @@ columns (handles, models, times, meters) drop out.
 | --- | --- | --- |
 | `pollSeconds` | `60` | Interval for remote reads (workers, environments, PRs, usage). Never under 30. Local reads (machine, owner steps, mailbox, config) run every 10 s. |
 | `staleMinutes` | `30` | A dispatched worker whose terminal is quiet longer than this is stale. |
-| `coordinators` | `[]` | `{ name, terminal?, run?, model?, worktrees? }`. `terminal` is the Orca terminal handle; `run` is the orchestration Run that holds its tasks; `worktrees` is a list of path prefixes whose agent terminals count as its workers. |
+| `coordinators` | `[]` | `{ name, parent?, terminal?, run?, model?, worktrees? }`. `parent` names a parent coordinator for Tasks grouping; `terminal` is the Orca terminal handle; `run` is the orchestration Run that holds its tasks; `worktrees` is a list of path prefixes whose agent terminals count as its workers. |
 | `workersCommand` | `orca orchestration task-list --run {run} --status dispatched --brief --json` | Argv that lists a coordinator's live tasks; `{run}` is replaced. A worker that leaves this list shows as done for an hour. Output over 4 MiB is refused, so keep the filter. |
 | `terminalsCommand` | `orca terminal list --json` | Argv that lists terminals with `lastOutputAt`. The output preview is used only to detect a waiting prompt and is never shown or stored. |
 | `screenCommand` | `orca terminal read --terminal {handle} --screen --json` | Argv that reads the rendered screen of a shown terminal, once per remote poll, to detect a permission dialog (`Do you want to proceed?`, `Esc to cancel`, `Allow command?`, trust prompts) in its last 20 rows (`Allow command?`, or two of the other markers). Only the match leaves the reader; the screen is never shown or stored. |
