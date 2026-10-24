@@ -1,5 +1,5 @@
 {
-  "name": "chief-engineer",
+  "name": "orchestrator-bar",
   "owner": { "name": "ogarciarevett" },
-  "plugins": [{ "name": "chief-engineer", "source": "./" }]
+  "plugins": [{ "name": "orchestrator-bar", "source": "./" }]
 }

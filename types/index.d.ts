@@ -3,11 +3,15 @@ export type Coordinator = {
   terminal?: string
   run?: string
   model?: string
+  // Name of the parent coordinator, for nested task groups.
+  parent?: string
   // Path prefixes: agent terminals under them show as this coordinator's workers.
   worktrees?: string[]
 }
 
 export type Config = {
+  // Set by the reader while the legacy path is in use.
+  migrationNotice?: string
   pollSeconds: number
   staleMinutes: number
   coordinators: Coordinator[]
@@ -40,6 +44,7 @@ export type WorkerRow = {
   pr?: string
   // The terminal it runs in, so one worker is never listed twice; not drawn.
   handle?: string
+  worktreePath?: string
   // When a dispatched worker left the list; it shows as done for an hour.
   doneAt?: number
 }
@@ -50,8 +55,13 @@ export type CoordinatorRow = {
   model: string
   quietMinutes?: number
   workers: WorkerRow[]
+  taskWorkers?: WorkerRow[]
   isWaitingPermission?: boolean
 }
+
+export type TaskStatus = { task: string; pr: string; state: string; left: string; eta_utc: string; updated: string }
+export type TaskRow = TaskStatus & { key: string; stale: boolean; fallback: boolean }
+export type TaskGroup = { coordinator: string; rows: TaskRow[] }
 
 export type EnvRow = { name: string; ready: string; state: string; checkedAt: number }
 export type RepoRow = { repo: string; prs: { number: number; isOld: boolean }[] }
@@ -65,6 +75,7 @@ export type Section<T> = { value?: T; at: number; error?: string }
 export type Snapshot = {
   config?: Section<Config>
   coordinators?: Section<CoordinatorRow[]>
+  tasks?: Section<TaskGroup[]>
   environments?: Section<EnvRow[]>
   prs?: Section<RepoRow[]>
   usage?: Section<string[]>
@@ -75,6 +86,6 @@ export type Snapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[]; expanded: string[] }
+    'orchestrator-bar': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[]; expanded: string[] }
   }
 }

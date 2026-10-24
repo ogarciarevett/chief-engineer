@@ -1,6 +1,6 @@
 // Pure parsers: each takes what a command or file gave and returns rows to draw.
 // No I/O here, so every reader is tested with plain strings.
-import type { Config, CoordinatorRow, EnvRow, Limits, Machine, MailRow, RepoRow, WorkerRow } from '../types'
+import type { Config, CoordinatorRow, EnvRow, Limits, Machine, MailRow, RepoRow, TaskStatus, TaskGroup, WorkerRow } from '../types'
 
 const DEFAULTS: Config = {
   pollSeconds: 60,
@@ -38,6 +38,17 @@ export function parseConfig(text: string): Config {
   if (!Array.isArray(c.coordinators) || !c.coordinators.every(x => typeof x?.name === 'string' && (x.worktrees === undefined || isStrings(x.worktrees)))) {
     throw new Error('coordinators must be a list of { name, worktrees? }')
   }
+  const names = c.coordinators.map(co => co.name)
+  if (new Set(names).size !== names.length) throw new Error('coordinator names must be unique')
+  for (const co of c.coordinators) {
+    const seen = new Set([co.name])
+    let parent = co.parent
+    while (parent !== undefined) {
+      if (typeof parent !== 'string' || !names.includes(parent) || seen.has(parent)) throw new Error('invalid coordinator parent')
+      seen.add(parent)
+      parent = c.coordinators.find(x => x.name === parent)?.parent
+    }
+  }
   if (!Array.isArray(c.environments) || !c.environments.every(x => typeof x?.name === 'string' && /^https?:\/\//.test(x?.url))) {
     throw new Error('environments must be a list of { name, url } with an http(s) url')
   }
@@ -54,7 +65,7 @@ export function parseConfig(text: string): Config {
 
 // The pane and its readers run in one session only: the one the config names by its
 // Orca terminal or its directory. No session key means no session.
-export function isChiefSession(c: Pick<Config, 'session'>, handle: string | undefined, cwd: string): boolean {
+export function isConfiguredSession(c: Pick<Config, 'session'>, handle: string | undefined, cwd: string): boolean {
   const s = c.session ?? {}
   return (!!s.orcaTerminalHandle && s.orcaTerminalHandle === handle) || (!!s.cwd && s.cwd.replace(/\/$/, '') === cwd.replace(/\/$/, ''))
 }
@@ -130,8 +141,44 @@ export function parseTerminalWorkers(stdout: string, worktrees: string[], skip: 
       const name = mask((t.title || t.handle.slice(0, 13)).replace(/\s+/g, ' '))
       const quiet = minutesSince(t.lastOutputAt, now)
       const state = waiting.get(t.handle)?.isWaiting ? 'input' : quiet === undefined || quiet > staleMinutes ? 'stale' : 'running'
-      return { name, state, quietMinutes: quiet, pr: name.match(PR)?.[1], handle: t.handle } as WorkerRow
+      return { name, state, quietMinutes: quiet, pr: name.match(PR)?.[1], handle: t.handle, worktreePath: t.worktreePath } as WorkerRow
     })
+}
+
+// Status text is untrusted: keep only bounded, single-line display fields.
+export function parseTaskStatus(text: string): TaskStatus {
+  if (text.length > 16_384) throw new Error('task status too large')
+  const raw = JSON.parse(text)
+  const fields = ['task', 'pr', 'state', 'left', 'eta_utc', 'updated'] as const
+  if (!raw || Array.isArray(raw) || typeof raw !== 'object' || !fields.every(k => typeof raw[k] === 'string' && raw[k].length <= 2000)) throw new Error('invalid task status')
+  const utc = (s: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(s) && Number.isFinite(Date.parse(s))
+  if (!raw.task.trim() || !raw.state.trim() || !utc(raw.updated) || (raw.eta_utc !== '' && !utc(raw.eta_utc))) throw new Error('invalid task status')
+  return Object.fromEntries(fields.map(k => [k, mask(raw[k].replace(/[\s\x00-\x1f\x7f]+/g, ' ').trim())])) as TaskStatus
+}
+
+export const taskIsStale = (updated: string, now: number) => !updated || now - Date.parse(updated) >= 20 * 60_000 || Date.parse(updated) > now
+
+// Config parents define the hierarchy; terminal path ownership uses the most specific prefix.
+export function taskGroups(config: Config, coordinators: CoordinatorRow[], files: Map<string, TaskStatus>, now: number): TaskGroup[] {
+  const groups: TaskGroup[] = []
+  const seen = new Set<string>()
+  const visit = (parent?: string, prefix = '') => {
+    for (const co of config.coordinators.filter(c => c.parent === parent)) {
+      const coordinator = prefix + co.name
+      const rows = (() => { const row = coordinators.find(c => c.name === co.name); return row?.taskWorkers ?? row?.workers ?? [] })()
+        .filter(w => w.state !== 'done' && w.state !== 'failed')
+        .filter(w => { const key = w.handle ?? co.name + '/' + w.name; if (seen.has(key)) return false; seen.add(key); return true })
+        .map(w => {
+          const status = w.worktreePath ? files.get(w.worktreePath) : undefined
+          const fallback = { task: w.name, pr: w.pr ? '#' + w.pr : '', state: w.state, left: 'unknown', eta_utc: '', updated: '' }
+          return { ...(status ?? fallback), key: w.handle ?? co.name + '/' + w.name, stale: taskIsStale(status?.updated ?? '', now), fallback: !status }
+        })
+      if (rows.length) groups.push({ coordinator, rows })
+      visit(co.name, coordinator + ' / ')
+    }
+  }
+  visit()
+  return groups
 }
 
 // A worker that was live last read and is gone now has settled: keep it as done for an hour.

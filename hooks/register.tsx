@@ -1,15 +1,19 @@
-// chief-engineer: a docked pane (and a band while it is closed) with the seven
+// orchestrator-bar: a docked pane (and a band while it is closed) with the eight
 // things a chief coordinator checks all day. Reads only; a failed read keeps the
 // last value and shows its age.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Config, Section, Snapshot, WorkerRow } from '../types'
+import type { Config, Section, Snapshot, TaskStatus, WorkerRow } from '../types'
 import {
   carryDone,
+  MACHINE_TTL_MS,
+  parseTaskStatus,
+  taskGroups,
+  taskIsStale,
   expandHome,
   cachedMachine,
-  isChiefSession,
+  isConfiguredSession,
   isPermissionPrompt,
   mask,
   mergeWorkers,
@@ -31,15 +35,15 @@ import {
   parseWorkers,
 } from './readers'
 
-const PANE = 'chief-engineer'
-const TITLE = 'Chief engineer'
+const PANE = 'orchestrator-bar'
+const TITLE = 'Orchestrator bar'
 const LOCAL_MS = 10_000
 // Shared by every pane on the Mac, so the machine is read once per TTL however many are open.
-const MACHINE_CACHE = '~/Library/Caches/chief-engineer/machine.json'
-const snapshot = atom({ plugin: 'chief-engineer', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-2' })
-const isPaneOpen = atom({ plugin: 'chief-engineer', key: 'isPaneOpen' } as const, false)
-const collapsed = atom({ plugin: 'chief-engineer', key: 'collapsed' } as const, [] as string[])
-const expanded = atom({ plugin: 'chief-engineer', key: 'expanded' } as const, [] as string[])
+const MACHINE_CACHE = '~/Library/Caches/orchestrator-bar/machine.json'
+const snapshot = atom({ plugin: 'orchestrator-bar', key: 'snapshot' } as const, {} as Snapshot, { shape: 'snapshot-2' })
+const isPaneOpen = atom({ plugin: 'orchestrator-bar', key: 'isPaneOpen' } as const, false)
+const collapsed = atom({ plugin: 'orchestrator-bar', key: 'collapsed' } as const, [] as string[])
+const expanded = atom({ plugin: 'orchestrator-bar', key: 'expanded' } as const, [] as string[])
 
 type $ = EngineInterface
 type Key = keyof Snapshot
@@ -66,8 +70,20 @@ async function run($: $, argv: string[], timeoutMs = 20_000) {
 
 async function readConfig($: $, path: string) {
   const home = (await $.env.get('HOME')) ?? ''
-  const c = parseConfig(await $.fs.read(expandHome(path, home)))
-  return { ...c, mailbox: expandHome(c.mailbox, home), ownerSteps: expandHome(c.ownerSteps, home) }
+  const target = expandHome(path, home)
+  let text: string
+  let migrationNotice: string | undefined
+  const legacy = target.replaceAll('orchestrator-bar', 'chief-engineer')
+  if (legacy !== target && !(await $.fs.exists(target))) {
+    text = await $.fs.read(legacy)
+    // The engine cannot create exclusively: never copy over a concurrent owner's config.
+    if (await $.fs.exists(target)) text = await $.fs.read(target)
+    else migrationNotice = 'Using legacy config; move it to the new path to finish migration.'
+  } else {
+    text = await $.fs.read(target)
+  }
+  const c = parseConfig(text)
+  return { ...c, migrationNotice, mailbox: expandHome(c.mailbox, home), ownerSteps: expandHome(c.ownerSteps, home) }
 }
 
 async function readRemote($: $, c: Config) {
@@ -83,8 +99,17 @@ async function readRemote($: $, c: Config) {
         c.coordinators.map(async co => (co.run ? parseWorkers(await run($, c.workersCommand.map(a => a.replace('{run}', co.run!))), terminals, now(), c.staleMinutes) : [])),
       )
       for (const w of dispatched.flat()) if (w.handle) seen.add(w.handle)
-      const mine = c.coordinators.map(co => {
-        const rows = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes)
+      const inventory = JSON.parse(terminalsOut)?.result?.terminals ?? []
+      const paths = new Map<string, string>(inventory.filter((t: any) => typeof t.worktreePath === 'string').map((t: any) => [t.handle, t.worktreePath]))
+      const owners = new Map<string, number>(inventory.map((t: any) => {
+        let owner = -1, length = -1
+        c.coordinators.forEach((co, i) => (co.worktrees ?? []).forEach(path => {
+          if (t.worktreePath?.startsWith(path) && path.length > length) { owner = i; length = path.length }
+        }))
+        return [t.handle, owner]
+      }))
+      const mine = c.coordinators.map((co, i) => {
+        const rows = parseTerminalWorkers(terminalsOut, co.worktrees ?? [], seen, now(), c.staleMinutes).filter(w => owners.get(w.handle!) === i)
         for (const w of rows) seen.add(w.handle!)
         return rows
       })
@@ -98,13 +123,14 @@ async function readRemote($: $, c: Config) {
           ),
         ),
       )
-      return c.coordinators.map((co, i) => {
+      const result = c.coordinators.map((co, i) => {
         const live = [...dispatched[i]!, ...mine[i]!]
-          .map(w => (w.handle && blocked.has(w.handle) ? { ...w, state: 'permission' as const } : w))
+          .map(w => ({ ...w, worktreePath: w.worktreePath ?? paths.get(w.handle ?? ''), ...(w.handle && blocked.has(w.handle) ? { state: 'permission' as const } : {}) }))
           .sort((a, b) => ORDER[a.state] - ORDER[b.state])
         const workers = mergeWorkers(carryDone(prev.find(p => p.name === co.name)?.workers ?? [], live, now()))
-        return coordinatorRow(co, workers, terminals, now(), !!co.terminal && blocked.has(co.terminal))
+        return { ...coordinatorRow(co, workers, terminals, now(), !!co.terminal && blocked.has(co.terminal)), taskWorkers: live }
       })
+      return result
     }),
     refresh($, 'environments', () =>
       Promise.all(
@@ -125,9 +151,28 @@ async function readRemote($: $, c: Config) {
   ])
 }
 
+// One bounded file read per distinct active worktree per TTL, in the configured session only.
+const taskFiles = new Map<string, { at: number; status: Promise<TaskStatus | undefined> }>()
+async function readTasks($: $, c: Config) {
+  const coords = (await read($, snapshot)).coordinators?.value ?? []
+  const paths = new Set(coords.flatMap(co => (co.taskWorkers ?? co.workers).filter(w => w.state !== 'done' && w.state !== 'failed').map(w => w.worktreePath).filter((p): p is string => !!p && p.startsWith('/'))))
+  for (const path of taskFiles.keys()) if (!paths.has(path)) taskFiles.delete(path)
+  const files = await Promise.all([...paths].map(async path => {
+    let cached = taskFiles.get(path)
+    if (!cached || Date.now() - cached.at >= MACHINE_TTL_MS) {
+      cached = { at: Date.now(), status: $.fs.read(path.replace(/\/$/, '') + '/.orca/task-status.json').then(parseTaskStatus, () => undefined).catch(() => undefined) }
+      taskFiles.set(path, cached)
+    }
+    const status = await cached.status
+    return status ? [[path, status] as const] : []
+  }))
+  return taskGroups(c, coords, new Map(files.flat()), Date.now())
+}
+
 async function readLocal($: $, c: Config) {
   const names = new Map(c.coordinators.filter(x => x.terminal).map(x => [x.terminal!, x.name]))
   await Promise.all([
+    refresh($, 'tasks', () => readTasks($, c)),
     refresh($, 'machine', async () => {
       const cache = expandHome(MACHINE_CACHE, (await $.env.get('HOME')) ?? '')
       const hit = await $.fs.read(cache).then(t => cachedMachine(t, Date.now()), () => undefined)
@@ -146,13 +191,21 @@ async function readLocal($: $, c: Config) {
   ])
 }
 
+const taskTable = (values: string[], width: number) => {
+  const widths = width >= 60 ? [Math.max(4, width - 46), 6, 8, 12, 7, 6] : [Math.max(4, width - 36), 4, 6, 8, 6, 5]
+  return values.map((v, i) => {
+    const n = widths[i]!
+    return (v.length > n ? v.slice(0, n - 1) + '…' : v).padEnd(n)
+  }).join(' ')
+}
+
 const ago = (ms: number) => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
   return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
 }
 
 // Module state: a reload starts it over, which only costs one early read.
-let configPath = '~/.config/chief-engineer/config.json'
+let configPath = '~/.config/orchestrator-bar/config.json'
 const busy = { local: false, remote: false }
 let lastRemote = 0
 
@@ -167,7 +220,7 @@ async function tick($: $) {
     if (!busy.remote && Date.now() - lastRemote >= c.pollSeconds * 1000) {
       busy.remote = true
       lastRemote = Date.now()
-      void readRemote($, c).finally(() => (busy.remote = false))
+      void readRemote($, c).then(() => refresh($, 'tasks', () => readTasks($, c))).finally(() => (busy.remote = false))
     }
   } finally {
     busy.local = false
@@ -175,7 +228,7 @@ async function tick($: $) {
 }
 
 async function open($: $) {
-  // Inline, room for all seven sections; docked, a sidebar wide enough for one row.
+  // Inline, room for all eight sections; docked, a sidebar wide enough for one row.
   const r = await $.ui.open({ id: PANE, title: TITLE, rows: 48, columns: 56 })
   await update($, isPaneOpen, () => r.isPlaced)
 }
@@ -187,17 +240,18 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     // Every other session on the Mac registers nothing and starts no process.
     const c = await readConfig($, configPath).catch(() => undefined)
-    if (!c || !isChiefSession(c, await $.env.get('ORCA_TERMINAL_HANDLE'), e.cwd)) return r
-    await $.command.register({ name: 'chief', description: 'Open the chief engineer pane' }).catch(() => {})
+    if (!c || !isConfiguredSession(c, await $.env.get('ORCA_TERMINAL_HANDLE'), e.cwd)) return r
+    taskFiles.clear()
+    await $.command.register({ name: 'orchestrator-bar', description: 'Open the orchestrator bar pane' }).catch(() => {})
     void open($).catch(() => {})
     void tick($).catch(() => {})
     $.clock.every(LOCAL_MS, () => void tick($).catch(() => {}))
     return r
   })
 
-  on('command.run', { command: 'chief' }, async $ => {
+  on('command.run', { command: 'orchestrator-bar' }, async $ => {
     await open($)
-    return { text: 'Chief engineer pane opened.' }
+    return { text: 'Orchestrator bar pane opened.' }
   })
 
   on('ui.close', async ($, e, next) => {
@@ -294,6 +348,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" rowGap="md">
+        {cfg.migrationNotice ? <Text color="warning" wrap="truncate-end">{cfg.migrationNotice}</Text> : ''}
         {row(
           <Text wrap="truncate-end">
             {permission ? <Text color="error" weight="bold">■ {permission} permission  </Text> : ''}
@@ -329,6 +384,25 @@ export const register: Register = (on, options) => {
             )
           }),
           workers.length ? <Text dimColor tabular>  {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length}</Text> : undefined,
+        )}
+        {section('tasks', '☷', 'Tasks', s.tasks, () =>
+          (s.tasks?.value ?? []).length ? (s.tasks?.value ?? []).map(group => (
+            <Box flexDirection="column">
+              <Text weight="bold" wrap="truncate-end">{mask(group.coordinator)}</Text>
+              <Text dimColor mono>{taskTable(['Task', 'PR', 'State', 'Left', 'ETA UTC', 'Updated'], w)}</Text>
+              {group.rows.map(task => {
+                const stale = taskIsStale(task.updated, Date.now())
+                const stamp = (v: string) => v ? v.slice(11, 16) : '?'
+                const fullText = `${task.task} | PR ${task.pr || '—'} | ${task.state}${stale ? ' (stale)' : ''} | Left: ${task.left || '—'} | ETA UTC: ${task.eta_utc || '?'} | Updated UTC: ${task.updated || '?'}${task.fallback ? ' (title only)' : ''}`
+                const isFull = full.includes(`task-${task.key}`)
+                return row(
+                  <Button key={`expand-task-${task.key}`} plain onPress={() => update($, expanded, list => isFull ? list.filter(x => x !== `task-${task.key}`) : [...list, `task-${task.key}`])}>
+                    <Text mono color={stale ? 'warning' : undefined} wrap={isFull ? 'wrap' : 'truncate-end'}>{mask(isFull ? fullText : taskTable([task.task, task.pr || '—', stale ? 'stale' : task.state, task.left || '—', stamp(task.eta_utc), stamp(task.updated)], w))}</Text>
+                  </Button>, undefined, 2,
+                )
+              })}
+            </Box>
+          )) : <Text dimColor>no active tasks</Text>,
         )}
         {section('environments', '◎', 'Environments', s.environments, () =>
           envs.map(env => {
@@ -469,7 +543,7 @@ export const register: Register = (on, options) => {
     const steps = s.steps?.value?.length ?? 0
     return (
       <Text wrap="truncate-end">
-        <Text color="claude" weight="bold">◆ chief  </Text>
+        <Text color="claude" weight="bold">◆ orchestrator-bar  </Text>
         <Text>● {workers.filter(x => x.state !== 'done' && x.state !== 'failed').length} workers  </Text>
         {permission ? <Text color="error" weight="bold">■ {permission} permission  </Text> : ''}
         {input ? <Text color="error" weight="bold">◐ {input} need you  </Text> : ''}
@@ -478,7 +552,7 @@ export const register: Register = (on, options) => {
         <Text>◇ {prs} PRs  </Text>
         {m ? <Text color={machineLevel(m, s.config.value.limits)}>▣ load {m.load.toFixed(0)}/{m.cores} mem {m.memoryPercent}% swap {m.swapUsedGB.toFixed(1)}G  </Text> : ''}
         {steps ? <Text color="warning">☐ {steps} steps  </Text> : ''}
-        <Text dimColor>/chief</Text>
+        <Text dimColor>/orchestrator-bar</Text>
       </Text>
     )
   })

@@ -2,8 +2,11 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   cachedMachine,
+  parseTaskStatus,
+  taskGroups,
+  taskIsStale,
   carryDone,
-  isChiefSession,
+  isConfiguredSession,
   MACHINE_TTL_MS,
   isPermissionPrompt,
   mask,
@@ -199,12 +202,12 @@ test('machine cache: fresh within the TTL, stale or unreadable is a miss', () =>
 })
 
 test('session: only the one the config names, by terminal or directory; none without a key', () => {
-  expect(isChiefSession({ session: { orcaTerminalHandle: 'term_chief' } }, 'term_chief', '/x')).toBe(true)
-  expect(isChiefSession({ session: { orcaTerminalHandle: 'term_chief' } }, 'term_other', '/x')).toBe(false)
-  expect(isChiefSession({ session: { cwd: '/w/chief/' } }, undefined, '/w/chief')).toBe(true)
-  expect(isChiefSession({ session: { cwd: '/w/chief' } }, undefined, '/w/chief-2')).toBe(false)
-  expect(isChiefSession({}, 'term_chief', '/w/chief')).toBe(false)
-  expect(isChiefSession({ session: { cwd: '' } }, undefined, '')).toBe(false)
+  expect(isConfiguredSession({ session: { orcaTerminalHandle: 'term_chief' } }, 'term_chief', '/x')).toBe(true)
+  expect(isConfiguredSession({ session: { orcaTerminalHandle: 'term_chief' } }, 'term_other', '/x')).toBe(false)
+  expect(isConfiguredSession({ session: { cwd: '/w/orchestrator-bar/' } }, undefined, '/w/orchestrator-bar')).toBe(true)
+  expect(isConfiguredSession({ session: { cwd: '/w/orchestrator-bar' } }, undefined, '/w/orchestrator-bar-2')).toBe(false)
+  expect(isConfiguredSession({}, 'term_chief', '/w/orchestrator-bar')).toBe(false)
+  expect(isConfiguredSession({ session: { cwd: '' } }, undefined, '')).toBe(false)
   expect(() => parseConfig('{"session":{"cwd":1}}')).toThrow(/session/)
 })
 
@@ -242,18 +245,34 @@ test('mailbox: last 5, newest first, names mapped, body never kept', () => {
 })
 
 // Stands for the engine beneath the mod: every read answers from fixtures.
-function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object } = {}) {
+function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object; status?: object; legacy?: boolean; concurrentConfig?: object } = {}) {
   const runs: string[][] = []
   const calls: string[] = []
   // The shared machine cache: missing until the plugin writes it.
   let cache = ''
+  let migrated = ''
+  let legacyReads = 0
   const clock = mock.clock(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
-  on('command.register', () => (calls.push('command'), { value: { command: 'chief' } }))
+  on('command.register', () => (calls.push('command'), { value: { command: 'orchestrator-bar' } }))
   on('ui.open', () => (calls.push('open'), { value: { isPlaced: opts.isPlaced ?? true } }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
-  on('fs.write', (_$: any, e: any) => ((cache = e.text), { value: undefined }))
+  on('fs.exists', (_$: any, e: any) => ({ value: !opts.legacy || !!migrated }))
+  on('fs.write', (_$: any, e: any) => {
+    if (e.path.endsWith('/config.json')) migrated = e.text
+    else cache = e.text
+    return { value: undefined }
+  })
   on('fs.read', (_$: any, e: any) => {
+    if (e.path.includes('chief-engineer')) {
+      legacyReads++
+      if (opts.concurrentConfig) migrated = JSON.stringify(opts.concurrentConfig)
+    }
+    if (migrated && e.path.endsWith('/orchestrator-bar/config.json')) return { value: migrated }
+    if (e.path.endsWith('/.orca/task-status.json')) {
+      calls.push('task-read')
+      return { value: opts.status ? JSON.stringify(opts.status) : '{}' }
+    }
     if (e.path.endsWith('/machine.json')) {
       if (!cache) throw new Error('ENOENT')
       return { value: cache }
@@ -289,23 +308,23 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
                 : 'claude: session 4%; weekly 29%\ncodex: weekly 22%'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return Object.assign(runs, { clock, calls, cache: () => cache })
+  return Object.assign(runs, { clock, calls, cache: () => cache, migration: () => ({ text: migrated, legacyReads }) })
 }
 
 const PANE = {
-  plugin: 'chief-engineer',
+  plugin: 'orchestrator-bar',
   component: 'Pane',
-  requestId: 'chief-engineer',
-  props: { title: 'Chief engineer', isFocused: false, bodyColumns: 90, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  requestId: 'orchestrator-bar',
+  props: { title: 'Orchestrator bar', isFocused: false, bodyColumns: 90, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
 
-test('the pane shows all seven panels from the config, on every surface', async ($, on) => {
+test('the pane shows all eight panels from the config, on every surface', async ($, on) => {
   const runs = engine(on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    for (const words of [/^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /^load 11\.2 \/ 18 cores$/, /^ {8}ok $/, /^CPU used 38%$/, /^memory used 52% \(18\.7 of 36 GB\)$/, /^swap used 5\.8 of 7\.0 GB$/, /☐ Approve the release/, /hello chief/, /1 need you/, /■ Side task in a worktree/, /^■ waiting for permission$/, /■ 2 permission/, /✓ \+1 done/]) {
+    for (const words of [/^Tasks$/, /^Coordinators$/, /^◆ $/, /^Alpha$/, /term_alpha  model-x medium/, /◐ w-input/, /^needs you$/, /^stale \d+m$/, /^ #1234$/, /▲ Dev/, /^normal$/, /^web$/, /^#42$/, /◷ 1 old/, /claude\s+session 4%/, /^load 11\.2 \/ 18 cores$/, /^ {8}ok $/, /^CPU used 38%$/, /^memory used 52% \(18\.7 of 36 GB\)$/, /^swap used 5\.8 of 7\.0 GB$/, /☐ Approve the release/, /hello chief/, /1 need you/, /■ Side task in a worktree/, /^■ waiting for permission$/, /■ 2 permission/, /✓ \+1 done/]) {
       expect((await ui.find({ type: 'Text', text: words }))?.text).toMatch(words)
     }
     expect(await ui.find({ type: 'Text', text: /codex/ })).toBe(undefined)
@@ -327,7 +346,7 @@ test('a section header collapses and opens its section; PR numbers link to GitHu
   expect((await ui.find({ type: 'Link', text: /open/ }))?.props.href).toBe('https://x.test/3')
   expect(await ui.find({ type: 'Text', text: /w-input/ })).toBeDefined()
   await ui.press({ key: 'toggle-coordinators' })
-  expect(await ui.find({ type: 'Text', text: /w-input/ })).toBe(undefined)
+  expect(await ui.find({ type: 'Button', key: 'expand-worker-term_w1' })).toBe(undefined)
   expect(await ui.find({ type: 'Text', text: /^Coordinators$/ })).toBeDefined()
   await ui.press({ key: 'toggle-coordinators' })
   expect(await ui.find({ type: 'Text', text: /w-input/ })).toBeDefined()
@@ -402,8 +421,8 @@ test('the band sums it up while the pane is closed', async ($, on) => {
   engine(on, { isPlaced: false })
   on('ui.render', ($: any, e: any) => $.ui.resolve(e).Text({ children: 'engine' }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const band = await $.ui.mount({ plugin: 'chief-engineer', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 160 } } as any)
-  const text = (await band.find({ type: 'Text', text: /◆ chief/ }))?.text ?? ''
+  const band = await $.ui.mount({ plugin: 'orchestrator-bar', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 160 } } as any)
+  const text = (await band.find({ type: 'Text', text: /◆ orchestrator-bar/ }))?.text ?? ''
   expect(text).toMatch(/● 4 workers  ■ 2 permission  ◐ 1 need you  ◌ 1 stale  ▲ envs 1\/1  ◇ 1 PRs  ▣ load 11\/18 mem 52% swap 5\.8G/)
   await band.unmount()
 })
@@ -421,10 +440,92 @@ for (const [why, session] of [['another session', { cwd: '/somewhere/else', orca
 test('the machine is read once per TTL through the shared cache', async ($, on) => {
   const runs = engine(on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(runs.calls).toEqual(['command', 'open'])
+  expect(runs.calls.filter(c => c !== 'task-read')).toEqual(['command', 'open'])
   // The second local tick, 10 s on, finds the cache fresh (the TTL itself is tested above).
   await runs.clock.advance(10_000)
   expect(runs.filter(a => a[0] === '/bin/ps').length).toBe(1)
   expect(JSON.parse(runs.cache()).value.cpuPercent).toBe(38)
   expect(runs.some(a => a[0] === '/usr/bin/top')).toBe(false)
+  expect(runs.migration().legacyReads).toBe(0)
+})
+
+const STATUS = { task: 'Fix login', pr: '#12', state: 'running', left: 'Review and merge', eta_utc: '2026-10-23T17:00:00Z', updated: '2026-10-23T15:50:00Z' }
+
+test('task status: validates fields and UTC dates, bounds and masks text, drops extra data', () => {
+  expect(parseTaskStatus(JSON.stringify({ ...STATUS, task: 'Fix\nlogin +12345678901', secret: 'do not show' }))).toEqual({ ...STATUS, task: 'Fix login [number]' })
+  for (const value of [null, [], {}, { ...STATUS, task: '' }, { ...STATUS, left: 3 }, { ...STATUS, updated: 'yesterday' }, { ...STATUS, eta_utc: '2026-10-23T17:00:00' }, { ...STATUS, task: 'x'.repeat(2001) }]) {
+    expect(() => parseTaskStatus(JSON.stringify(value))).toThrow()
+  }
+  expect(() => parseTaskStatus('x'.repeat(16385))).toThrow()
+  expect(parseTaskStatus(JSON.stringify({ ...STATUS, eta_utc: '' })).eta_utc).toBe('')
+})
+
+test('tasks: stale at twenty minutes, unknown and future updates are stale', () => {
+  expect([NOW - 19 * 60000, NOW - 20 * 60000, NOW + 60000].map(t => taskIsStale(new Date(t).toISOString(), NOW))).toEqual([false, true, true])
+  expect(taskIsStale('', NOW)).toBe(true)
+})
+
+test('tasks: parent before sub-coordinator, one row per handle, status or title fallback', () => {
+  const config = parseConfig(JSON.stringify({ coordinators: [{ name: 'Child', parent: 'Root' }, { name: 'Other' }, { name: 'Root' }] }))
+  const worker = { name: 'Terminal title', state: 'running' as const, handle: 'one', worktreePath: '/w/task' }
+  const coords = [
+    { name: 'Root', terminal: '', model: '', workers: [worker, { name: 'Finished', state: 'done' as const }], taskWorkers: [worker, { ...worker, handle: 'another' }] },
+    { name: 'Child', terminal: '', model: '', workers: [worker, { name: 'Review PR #9', pr: '9', state: 'input' as const, handle: 'two' }] },
+  ]
+  const groups = taskGroups(config, coords, new Map([['/w/task', STATUS]]), NOW)
+  expect(groups.map(g => g.coordinator)).toEqual(['Root', 'Root / Child'])
+  expect(groups[0]?.rows.length).toBe(2)
+  expect(groups[0]?.rows[0]).toEqual({ ...STATUS, key: 'one', stale: false, fallback: false })
+  expect(groups[1]?.rows[0]).toEqual({ task: 'Review PR #9', pr: '#9', state: 'input', left: 'unknown', eta_utc: '', updated: '', key: 'two', stale: true, fallback: true })
+  for (const coordinators of [[{ name: 'A', parent: 'B' }], [{ name: 'A', parent: 'A' }], [{ name: 'A', parent: 'B' }, { name: 'B', parent: 'A' }], [{ name: 'A' }, { name: 'A' }]]) {
+    expect(() => parseConfig(JSON.stringify({ coordinators }))).toThrow()
+  }
+})
+
+test('Tasks reads each worktree once per TTL, uses the most specific coordinator, and renders status', async ($, on) => {
+  const runs = engine(on, { status: { ...STATUS, updated: new Date().toISOString() }, config: { ...CONFIG, coordinators: [CONFIG.coordinators[0], { name: 'Sub', parent: 'Alpha', worktrees: ['/w/alpha-x'] }] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Tasks$/ }))?.text).toBe('Tasks')
+  expect((await ui.find({ type: 'Text', text: /^Alpha \/ Sub$/ }))?.text).toBe('Alpha / Sub')
+  expect(await ui.find({ type: 'Text', text: /Fix login/ })).toBeDefined()
+  expect(runs.calls.filter(c => c === 'task-read').length).toBe(1)
+  await runs.clock.advance(10_000)
+  expect(runs.calls.filter(c => c === 'task-read').length).toBe(1)
+  // Status files introduce no processes beyond the existing remote inventory and local readers.
+  expect(runs.filter(a => a.includes('terminal') && a.includes('list')).length).toBe(1)
+  await ui.unmount()
+})
+
+
+
+test('config migration: without exclusive create, keep reading legacy with a notice and no config writes', async ($, on) => {
+  const runs = engine(on, { legacy: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(runs.migration().text).toBe('')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^Using legacy config;/ })).toBeDefined()
+  const count = runs.migration().legacyReads
+  await runs.clock.advance(20_000)
+  expect(runs.migration().legacyReads > count).toBe(true)
+  expect(runs.migration().text).toBe('')
+  await ui.unmount()
+})
+
+test('config migration: a concurrently created target wins, its selector is never overwritten', async ($, on) => {
+  const target = { ...CONFIG, session: { cwd: '/new-selector' } }
+  const runs = engine(on, { legacy: true, concurrentConfig: target })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(JSON.parse(runs.migration().text)).toEqual(target)
+  expect(runs.migration().legacyReads).toBe(1)
+  expect([...runs]).toEqual([])
+  expect(runs.calls).toEqual([])
+})
+
+test('config migration: invalid legacy data never enables collectors or writes config', async ($, on) => {
+  const runs = engine(on, { legacy: true, config: { ...CONFIG, session: 7 } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(runs.migration().text).toBe('')
+  expect(runs.migration().legacyReads).toBe(1)
+  expect([...runs]).toEqual([])
 })

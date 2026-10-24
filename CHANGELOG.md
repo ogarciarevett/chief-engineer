@@ -1,8 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Rename to orchestrator-bar, including the plugin and command; read legacy config paths until safely migrated without changing the session selector.
+- Add a Tasks table grouped by coordinator and sub-coordinator with remaining work, UTC ETA and update time, title fallback and 20-minute stale flags.
+- Reuse the session gate, existing polling and 15-second cache TTL; no additional collector processes.
+
 ## 0.2.3
 
-- The pane and its readers run only in the session named by the new `session` config key (Orca terminal handle or directory); every other session registers nothing and starts no process, and no key means no session. CPU comes from one `ps -A -o %cpu` sum over the cores, never `top`. Machine readings are shared through `~/Library/Caches/chief-engineer/machine.json` with a 15 s TTL.
+- The pane and its readers run only in the session named by the new `session` config key (Orca terminal handle or directory); every other session registers nothing and starts no process, and no key means no session. CPU comes from one `ps -A -o %cpu` sum over the cores, never `top`. Machine readings are shared through `~/Library/Caches/orchestrator-bar/machine.json` with a 15 s TTL.
 
 ## 0.2.2
 
