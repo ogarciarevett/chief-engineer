@@ -69,9 +69,11 @@ Install `orchestrator-bar` with the command above, disable the old plugin, and
 move its `configPath` option to the new plugin entry. Keep the same `session`
 selector so only that session runs the panel. Use `/orchestrator-bar` to open it.
 If the renamed config path does not exist, the plugin reads the corresponding
-`chief-engineer` path once and copies it to the new path. It never overwrites an
-existing config or changes its session selector. After migration, only the new
-path is read. Restart the configured session after updating the plugin.
+`chief-engineer` path and shows a one-line migration notice. The plugin API has
+no exclusive-create operation, so it never writes a config. Move the old file
+to the new path without replacing an existing file, keeping the same `session`
+selector. If the new file appears during a read, it takes precedence. After
+migration, only the new path is read. Restart the configured session after updating.
 
 ## What it shows
 

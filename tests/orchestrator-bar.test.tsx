@@ -245,7 +245,7 @@ test('mailbox: last 5, newest first, names mapped, body never kept', () => {
 })
 
 // Stands for the engine beneath the mod: every read answers from fixtures.
-function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object; status?: object; legacy?: boolean } = {}) {
+function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object; status?: object; legacy?: boolean; concurrentConfig?: object } = {}) {
   const runs: string[][] = []
   const calls: string[] = []
   // The shared machine cache: missing until the plugin writes it.
@@ -264,7 +264,10 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
     return { value: undefined }
   })
   on('fs.read', (_$: any, e: any) => {
-    if (e.path.includes('chief-engineer')) legacyReads++
+    if (e.path.includes('chief-engineer')) {
+      legacyReads++
+      if (opts.concurrentConfig) migrated = JSON.stringify(opts.concurrentConfig)
+    }
     if (migrated && e.path.endsWith('/orchestrator-bar/config.json')) return { value: migrated }
     if (e.path.endsWith('/.orca/task-status.json')) {
       calls.push('task-read')
@@ -496,16 +499,30 @@ test('Tasks reads each worktree once per TTL, uses the most specific coordinator
 
 
 
-test('config migration: copy a valid legacy config once, preserve the selector, and prefer the new file', async ($, on) => {
+test('config migration: without exclusive create, keep reading legacy with a notice and no config writes', async ($, on) => {
   const runs = engine(on, { legacy: true })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(JSON.parse(runs.migration().text)).toEqual(CONFIG)
-  expect(runs.migration().legacyReads).toBe(1)
+  expect(runs.migration().text).toBe('')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^Using legacy config;/ })).toBeDefined()
+  const count = runs.migration().legacyReads
   await runs.clock.advance(20_000)
-  expect(runs.migration().legacyReads).toBe(1)
+  expect(runs.migration().legacyReads > count).toBe(true)
+  expect(runs.migration().text).toBe('')
+  await ui.unmount()
 })
 
-test('config migration: existing config is preferred and invalid legacy data is never copied', async ($, on) => {
+test('config migration: a concurrently created target wins, its selector is never overwritten', async ($, on) => {
+  const target = { ...CONFIG, session: { cwd: '/new-selector' } }
+  const runs = engine(on, { legacy: true, concurrentConfig: target })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(JSON.parse(runs.migration().text)).toEqual(target)
+  expect(runs.migration().legacyReads).toBe(1)
+  expect([...runs]).toEqual([])
+  expect(runs.calls).toEqual([])
+})
+
+test('config migration: invalid legacy data never enables collectors or writes config', async ($, on) => {
   const runs = engine(on, { legacy: true, config: { ...CONFIG, session: 7 } })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   expect(runs.migration().text).toBe('')

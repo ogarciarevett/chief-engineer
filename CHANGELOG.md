@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-- Rename to orchestrator-bar, including the plugin and command; migrate legacy config paths without changing the session selector.
+- Rename to orchestrator-bar, including the plugin and command; read legacy config paths until safely migrated without changing the session selector.
 - Add a Tasks table grouped by coordinator and sub-coordinator with remaining work, UTC ETA and update time, title fallback and 20-minute stale flags.
 - Reuse the session gate, existing polling and 15-second cache TTL; no additional collector processes.
 

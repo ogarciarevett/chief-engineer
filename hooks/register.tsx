@@ -68,23 +68,22 @@ async function run($: $, argv: string[], timeoutMs = 20_000) {
   return r.stdout
 }
 
-const migratedConfigs = new Set<string>()
 async function readConfig($: $, path: string) {
   const home = (await $.env.get('HOME')) ?? ''
   const target = expandHome(path, home)
   let text: string
+  let migrationNotice: string | undefined
   const legacy = target.replaceAll('orchestrator-bar', 'chief-engineer')
-  if (legacy !== target && !migratedConfigs.has(target) && !(await $.fs.exists(target))) {
-    migratedConfigs.add(target)
+  if (legacy !== target && !(await $.fs.exists(target))) {
     text = await $.fs.read(legacy)
-    // Validate before copying; an invalid legacy file must never become the new config.
-    parseConfig(text)
-    await $.fs.write(target, text)
+    // The engine cannot create exclusively: never copy over a concurrent owner's config.
+    if (await $.fs.exists(target)) text = await $.fs.read(target)
+    else migrationNotice = 'Using legacy config; move it to the new path to finish migration.'
   } else {
     text = await $.fs.read(target)
   }
   const c = parseConfig(text)
-  return { ...c, mailbox: expandHome(c.mailbox, home), ownerSteps: expandHome(c.ownerSteps, home) }
+  return { ...c, migrationNotice, mailbox: expandHome(c.mailbox, home), ownerSteps: expandHome(c.ownerSteps, home) }
 }
 
 async function readRemote($: $, c: Config) {
@@ -349,6 +348,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" rowGap="md">
+        {cfg.migrationNotice ? <Text color="warning" wrap="truncate-end">{cfg.migrationNotice}</Text> : ''}
         {row(
           <Text wrap="truncate-end">
             {permission ? <Text color="error" weight="bold">■ {permission} permission  </Text> : ''}

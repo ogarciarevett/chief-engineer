@@ -10,6 +10,8 @@ export type Coordinator = {
 }
 
 export type Config = {
+  // Set by the reader while the legacy path is in use.
+  migrationNotice?: string
   pollSeconds: number
   staleMinutes: number
   coordinators: Coordinator[]
