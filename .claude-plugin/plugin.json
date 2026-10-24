@@ -1,9 +1,12 @@
 {
-  "name": "chief-engineer",
-  "version": "0.2.3",
-  "description": "A live pane for a chief coordinator: coordinators and their workers, environments, open PRs, provider usage, machine load, owner steps and the mailbox.",
-  "author": { "name": "ogarciarevett", "url": "https://github.com/ogarciarevett" },
-  "repository": "https://github.com/ogarciarevett/chief-engineer",
+  "name": "orchestrator-bar",
+  "version": "0.3.0",
+  "description": "A read-only orchestrator bar for coordinator and worker tasks, environments, pull requests, usage and machine load.",
+  "author": {
+    "name": "ogarciarevett",
+    "url": "https://github.com/ogarciarevett"
+  },
+  "repository": "https://github.com/ogarciarevett/orchestrator-bar",
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -11,7 +14,7 @@
       "title": "Config file",
       "description": "Path to the JSON config (see config.example.json). Keep it outside the repo.",
       "type": "string",
-      "default": "~/.config/chief-engineer/config.json"
+      "default": "~/.config/orchestrator-bar/config.json"
     }
   }
 }

@@ -53,6 +53,7 @@ export type CoordinatorRow = {
   model: string
   quietMinutes?: number
   workers: WorkerRow[]
+  taskWorkers?: WorkerRow[]
   isWaitingPermission?: boolean
 }
 
@@ -83,6 +84,6 @@ export type Snapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'chief-engineer': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[]; expanded: string[] }
+    'orchestrator-bar': { snapshot: Shaped<Snapshot>; isPaneOpen: boolean; collapsed: string[]; expanded: string[] }
   }
 }

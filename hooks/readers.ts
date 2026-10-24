@@ -65,7 +65,7 @@ export function parseConfig(text: string): Config {
 
 // The pane and its readers run in one session only: the one the config names by its
 // Orca terminal or its directory. No session key means no session.
-export function isChiefSession(c: Pick<Config, 'session'>, handle: string | undefined, cwd: string): boolean {
+export function isConfiguredSession(c: Pick<Config, 'session'>, handle: string | undefined, cwd: string): boolean {
   const s = c.session ?? {}
   return (!!s.orcaTerminalHandle && s.orcaTerminalHandle === handle) || (!!s.cwd && s.cwd.replace(/\/$/, '') === cwd.replace(/\/$/, ''))
 }
@@ -165,7 +165,7 @@ export function taskGroups(config: Config, coordinators: CoordinatorRow[], files
   const visit = (parent?: string, prefix = '') => {
     for (const co of config.coordinators.filter(c => c.parent === parent)) {
       const coordinator = prefix + co.name
-      const rows = (coordinators.find(c => c.name === co.name)?.workers ?? [])
+      const rows = (() => { const row = coordinators.find(c => c.name === co.name); return row?.taskWorkers ?? row?.workers ?? [] })()
         .filter(w => w.state !== 'done' && w.state !== 'failed')
         .filter(w => { const key = w.handle ?? co.name + '/' + w.name; if (seen.has(key)) return false; seen.add(key); return true })
         .map(w => {

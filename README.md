@@ -1,12 +1,12 @@
-# chief-engineer
+# orchestrator-bar
 
 One live panel beside your Claude Code chat for people who run many coding agents at once.
 
-[![ci](https://github.com/ogarciarevett/chief-engineer/actions/workflows/ci.yml/badge.svg)](https://github.com/ogarciarevett/chief-engineer/actions/workflows/ci.yml)
-![version 0.2.1](https://img.shields.io/badge/version-0.2.1-blue)
+[![ci](https://github.com/ogarciarevett/orchestrator-bar/actions/workflows/ci.yml/badge.svg)](https://github.com/ogarciarevett/orchestrator-bar/actions/workflows/ci.yml)
+![version 0.3.0](https://img.shields.io/badge/version-0.3.0-blue)
 ![MIT](https://img.shields.io/badge/licence-MIT-green)
 
-![A Claude Code session in a terminal with the chief-engineer panel docked on the right](docs/screenshot.png)
+![A Claude Code session in a terminal with the orchestrator-bar panel docked on the right](docs/screenshot.png)
 
 *A normal Claude Code session (left) with the panel docked on the right. Demo data:
 two coordinators, their workers, three environments, open PRs, usage, machine load,
@@ -15,7 +15,7 @@ owner steps and the mailbox.*
 ## Install
 
 ```
-claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer --scope user --config configPath=$HOME/.config/chief-engineer/config.json
+claude plugin install orchestrator-bar --marketplace ogarciarevett/orchestrator-bar --scope user --config configPath=$HOME/.config/orchestrator-bar/config.json
 ```
 
 ## Quick start
@@ -23,21 +23,21 @@ claude plugin install chief-engineer --marketplace ogarciarevett/chief-engineer 
 ```
 # 1. Get the example config, then put your coordinators, repos and environments in it,
 #    and set "session" to the one session that runs the pane (no key: no session runs it)
-mkdir -p ~/.config/chief-engineer
-curl -fsSL https://raw.githubusercontent.com/ogarciarevett/chief-engineer/main/config.example.json -o ~/.config/chief-engineer/config.json
+mkdir -p ~/.config/orchestrator-bar
+curl -fsSL https://raw.githubusercontent.com/ogarciarevett/orchestrator-bar/main/config.example.json -o ~/.config/orchestrator-bar/config.json
 
 # 2. Start Claude Code fullscreen in a terminal at least 110 columns wide
 CLAUDE_CODE_NO_FLICKER=1 claude
 ```
 
 The panel docks on the right of the chat. In a normal (not fullscreen) session it
-opens inline above the prompt; `/chief` opens it at any time.
+opens inline above the prompt; `/orchestrator-bar` opens it at any time.
 While the pane is closed, a one-line band above the prompt sums up what needs you.
 
 ## Why it is different
 
-- **One screen, not seven.** Workers, environments, PRs, usage limits, machine load,
-  your open steps and the mailbox stay beside the chat you are already in.
+- **One screen for the work.** Workers, environments, PRs, usage limits, machine load,
+  tasks, your open steps and the mailbox stay beside the chat you are already in.
 - **It finds stuck agents.** A coordinator or worker that sits on a permission
   dialog turns red and moves to the top.
 - **Read-only.** It runs only list and read commands, your own usage command,
@@ -45,23 +45,33 @@ While the pane is closed, a one-line band above the prompt sums up what needs yo
   service, no paid API calls, no API key.
 - **It never shows secrets.** No message bodies, terminal output or environment
   variables; phone-like numbers are masked.
-- **Tested.** 22 tests run in CI with `claude plugin test`; the status list below
+- **Tested.** the test suite run in CI with `claude plugin test`; the status list below
   says what is done and what is not.
 
 ## Install details
 
 At the prompt of a session you can also run
-`/plugin install chief-engineer --marketplace ogarciarevett/chief-engineer`
+`/plugin install orchestrator-bar --marketplace ogarciarevett/orchestrator-bar`
 (answer `y` to add the marketplace, then pick a scope).
 
 Keep the config outside any repo. To change its path later,
-use `/config` (field `Config file` of `chief-engineer`) or `~/.claude/settings.json`:
+use `/config` (field `Config file` of `orchestrator-bar`) or `~/.claude/settings.json`:
 
 ```json
-{ "pluginConfigs": { "chief-engineer": { "options": { "configPath": "/absolute/path/config.json" } } } }
+{ "pluginConfigs": { "orchestrator-bar": { "options": { "configPath": "/absolute/path/config.json" } } } }
 ```
 
-To run it from a checkout instead: `claude --plugin-dir /path/to/chief-engineer`.
+To run it from a checkout instead: `claude --plugin-dir /path/to/orchestrator-bar`.
+
+## Upgrading from chief-engineer
+
+Install `orchestrator-bar` with the command above, disable the old plugin, and
+move its `configPath` option to the new plugin entry. Keep the same `session`
+selector so only that session runs the panel. Use `/orchestrator-bar` to open it.
+If the renamed config path does not exist, the plugin reads the corresponding
+`chief-engineer` path once and copies it to the new path. It never overwrites an
+existing config or changes its session selector. After migration, only the new
+path is read. Restart the configured session after updating the plugin.
 
 ## What it shows
 
@@ -147,14 +157,14 @@ columns (handles, models, times, meters) drop out.
 
 ## Status
 
-Implemented and covered by `claude plugin test` (22 tests):
+Implemented and covered by `claude plugin test` (the test suite):
 
 - Config parsing, defaults and validation; one assert-based test per data reader
   (workers, terminal workers, worker merge, permission dialogs, environments, PRs,
   usage, machine, owner steps, mailbox).
 - Section headers collapse and reopen their section; a cut-off row opens in full
   and closes again; PR numbers link to GitHub.
-- The pane draws all seven sections from a config on the terminal and desktop
+- The pane draws all eight sections from a config on the terminal and desktop
   surfaces; only the allowed read-only commands run.
 - An environment that does not answer shows as down instead of failing.
 - A section whose first read fails shows the error; a status page that is not
