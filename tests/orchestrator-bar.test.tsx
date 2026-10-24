@@ -245,18 +245,27 @@ test('mailbox: last 5, newest first, names mapped, body never kept', () => {
 })
 
 // Stands for the engine beneath the mod: every read answers from fixtures.
-function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object; status?: object } = {}) {
+function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca?: boolean; htmlStatus?: boolean; garbageOrca?: boolean; config?: object; status?: object; legacy?: boolean } = {}) {
   const runs: string[][] = []
   const calls: string[] = []
   // The shared machine cache: missing until the plugin writes it.
   let cache = ''
+  let migrated = ''
+  let legacyReads = 0
   const clock = mock.clock(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('command.register', () => (calls.push('command'), { value: { command: 'orchestrator-bar' } }))
   on('ui.open', () => (calls.push('open'), { value: { isPlaced: opts.isPlaced ?? true } }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
-  on('fs.write', (_$: any, e: any) => ((cache = e.text), { value: undefined }))
+  on('fs.exists', (_$: any, e: any) => ({ value: !opts.legacy || !!migrated }))
+  on('fs.write', (_$: any, e: any) => {
+    if (e.path.endsWith('/config.json')) migrated = e.text
+    else cache = e.text
+    return { value: undefined }
+  })
   on('fs.read', (_$: any, e: any) => {
+    if (e.path.includes('chief-engineer')) legacyReads++
+    if (migrated && e.path.endsWith('/orchestrator-bar/config.json')) return { value: migrated }
     if (e.path.endsWith('/.orca/task-status.json')) {
       calls.push('task-read')
       return { value: opts.status ? JSON.stringify(opts.status) : '{}' }
@@ -296,7 +305,7 @@ function engine(on: any, opts: { failEnv?: boolean; isPlaced?: boolean; failOrca
                 : 'claude: session 4%; weekly 29%\ncodex: weekly 22%'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return Object.assign(runs, { clock, calls, cache: () => cache })
+  return Object.assign(runs, { clock, calls, cache: () => cache, migration: () => ({ text: migrated, legacyReads }) })
 }
 
 const PANE = {
@@ -434,6 +443,7 @@ test('the machine is read once per TTL through the shared cache', async ($, on) 
   expect(runs.filter(a => a[0] === '/bin/ps').length).toBe(1)
   expect(JSON.parse(runs.cache()).value.cpuPercent).toBe(38)
   expect(runs.some(a => a[0] === '/usr/bin/top')).toBe(false)
+  expect(runs.migration().legacyReads).toBe(0)
 })
 
 const STATUS = { task: 'Fix login', pr: '#12', state: 'running', left: 'Review and merge', eta_utc: '2026-10-23T17:00:00Z', updated: '2026-10-23T15:50:00Z' }
@@ -456,11 +466,12 @@ test('tasks: parent before sub-coordinator, one row per handle, status or title 
   const config = parseConfig(JSON.stringify({ coordinators: [{ name: 'Child', parent: 'Root' }, { name: 'Other' }, { name: 'Root' }] }))
   const worker = { name: 'Terminal title', state: 'running' as const, handle: 'one', worktreePath: '/w/task' }
   const coords = [
-    { name: 'Root', terminal: '', model: '', workers: [worker, { name: 'Finished', state: 'done' as const }] },
+    { name: 'Root', terminal: '', model: '', workers: [worker, { name: 'Finished', state: 'done' as const }], taskWorkers: [worker, { ...worker, handle: 'another' }] },
     { name: 'Child', terminal: '', model: '', workers: [worker, { name: 'Review PR #9', pr: '9', state: 'input' as const, handle: 'two' }] },
   ]
   const groups = taskGroups(config, coords, new Map([['/w/task', STATUS]]), NOW)
   expect(groups.map(g => g.coordinator)).toEqual(['Root', 'Root / Child'])
+  expect(groups[0]?.rows.length).toBe(2)
   expect(groups[0]?.rows[0]).toEqual({ ...STATUS, key: 'one', stale: false, fallback: false })
   expect(groups[1]?.rows[0]).toEqual({ task: 'Review PR #9', pr: '#9', state: 'input', left: 'unknown', eta_utc: '', updated: '', key: 'two', stale: true, fallback: true })
   for (const coordinators of [[{ name: 'A', parent: 'B' }], [{ name: 'A', parent: 'A' }], [{ name: 'A', parent: 'B' }, { name: 'B', parent: 'A' }], [{ name: 'A' }, { name: 'A' }]]) {
@@ -483,3 +494,21 @@ test('Tasks reads each worktree once per TTL, uses the most specific coordinator
   await ui.unmount()
 })
 
+
+
+test('config migration: copy a valid legacy config once, preserve the selector, and prefer the new file', async ($, on) => {
+  const runs = engine(on, { legacy: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(JSON.parse(runs.migration().text)).toEqual(CONFIG)
+  expect(runs.migration().legacyReads).toBe(1)
+  await runs.clock.advance(20_000)
+  expect(runs.migration().legacyReads).toBe(1)
+})
+
+test('config migration: existing config is preferred and invalid legacy data is never copied', async ($, on) => {
+  const runs = engine(on, { legacy: true, config: { ...CONFIG, session: 7 } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(runs.migration().text).toBe('')
+  expect(runs.migration().legacyReads).toBe(1)
+  expect([...runs]).toEqual([])
+})

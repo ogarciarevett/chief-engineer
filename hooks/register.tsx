@@ -73,16 +73,15 @@ async function readConfig($: $, path: string) {
   const home = (await $.env.get('HOME')) ?? ''
   const target = expandHome(path, home)
   let text: string
-  try {
-    text = await $.fs.read(target)
-  } catch (error) {
-    const legacy = target.replaceAll('orchestrator-bar', 'chief-engineer')
-    if (legacy === target || migratedConfigs.has(target)) throw error
+  const legacy = target.replaceAll('orchestrator-bar', 'chief-engineer')
+  if (legacy !== target && !migratedConfigs.has(target) && !(await $.fs.exists(target))) {
     migratedConfigs.add(target)
     text = await $.fs.read(legacy)
     // Validate before copying; an invalid legacy file must never become the new config.
     parseConfig(text)
     await $.fs.write(target, text)
+  } else {
+    text = await $.fs.read(target)
   }
   const c = parseConfig(text)
   return { ...c, mailbox: expandHome(c.mailbox, home), ownerSteps: expandHome(c.ownerSteps, home) }
